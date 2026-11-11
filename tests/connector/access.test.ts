@@ -63,6 +63,19 @@ describe("who is calling", () => {
     expect(await who(await app.connect("margaret@gmail.com"))).toMatchObject({ ok: true });
   });
 
+  it("ending one member's grant leaves another member of the same app connected", async () => {
+    // Claude reaches every member through one client, so a grant must count only for the member who gave it.
+    const ended = await app.connect("hedy@gmail.com");
+    const kept = await app.connect("annie@gmail.com", "editor", { clientId: ended.clientId });
+    expect(claimsOf(kept.accessToken).azp).toBe(ended.clientId);
+
+    await revokeAccess(app.db, { userId: ended.userId }, { sessions: false });
+
+    expect(await who(ended)).toEqual({ ok: false, reason: "revoked" });
+    expect(await who(kept)).toMatchObject({ ok: true, user: { id: kept.userId } });
+    expect((await refresh(kept)).status).toBe(200);
+  });
+
   it("a member off the allowlist is refused even if a grant row is left behind", async () => {
     const c = await app.connect("katherine@gmail.com");
     await app.db.execute(sql`delete from allowlist where email = 'katherine@gmail.com'`);
