@@ -1,5 +1,6 @@
 import type { Role } from "@/lib/allowlist/service";
 import { summarizeOps } from "@/lib/editor/activity";
+import { LIMITS } from "@/lib/limits";
 import { actorUserId, displayActor } from "@/lib/projects/display-actor";
 import { getOpsSince, getProject } from "@/lib/projects/service";
 import { getUserNames } from "@/lib/projects/user-names";
@@ -107,4 +108,33 @@ export async function failureResult(
     );
   }
   return fail(`${error.message}\n${NOTHING_APPLIED}`);
+}
+
+// add_text's own refusals.
+export function textItemInvalid(index: number): string {
+  return `items[${index}].text must be 1 to ${LIMITS.textClipChars} characters that can be saved.`;
+}
+
+export function tooManyTextItems(limit: number): string {
+  return `At most ${limit} text clips per call.`;
+}
+
+export const NO_ROOM_FOR_TEXT = `There is no room for that text: the project has ${LIMITS.tracksPerProject} tracks and none is free at that time. Remove a track or pick another time.`;
+
+// undo_change's own refusals.
+export function noSuchChange(version: number): string {
+  return `No change with version ${version} in this project.`;
+}
+
+export function noUndoData(version: number): string {
+  return `Version ${version} has no undo data.`;
+}
+
+// runEdit's refusal for an undo, reworded: an op index into stored undo data means nothing to the caller.
+// Every other refusal (role, conflict, budget, not found) passes through unchanged.
+export function undoFailure(version: number, result: ToolResult): ToolResult {
+  const [first, second] = result.text.split("\n");
+  if (!first.startsWith("Edit refused: ops[")) return result;
+  const reason = first.endsWith("failed with STALE.") ? "that part of the project was changed afterwards." : second;
+  return fail(`Can't undo version ${version}: ${reason}\n${NOTHING_APPLIED}`);
 }

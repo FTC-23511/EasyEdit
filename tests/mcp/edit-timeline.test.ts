@@ -192,6 +192,16 @@ describe("edit_timeline", () => {
     expect((await project()).version).toBe(1);
   });
 
+  it("a repeat of a change that landed gets the first answer even when the budget is used up", async () => {
+    const { edit, project, log } = await setup({ limits: { connectorWritesPerMinute: 1 } });
+    const first = await edit(0, [addText(0)]);
+    expect(first.isError).toBe(false);
+    expect(await edit(0, [addText(0)])).toEqual(first);
+    expect(await edit(1, [addText(60)])).toEqual({ isError: true, text: "Too many changes at once: 1 in the last minute (the limit is 1). Wait a minute, then continue." });
+    expect(await log()).toHaveLength(1);
+    expect((await project()).version).toBe(1);
+  });
+
   it("the answer to an edit of a large project stays small", async () => {
     const { db, id, edit } = await setup();
     const version = await fillWithText(db, grace, id, 999);

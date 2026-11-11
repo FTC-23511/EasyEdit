@@ -3,10 +3,12 @@ import { z } from "zod";
 import { LIMITS } from "@/lib/limits";
 import { FormatId } from "@/lib/timeline";
 import { UNEXPECTED } from "./errors";
+import { addTextTool } from "./tools/add-text";
 import { createProjectTool } from "./tools/create-project";
 import { editTimelineTool } from "./tools/edit-timeline";
 import { getProjectTool } from "./tools/get-project";
 import { listProjectsTool } from "./tools/list-projects";
+import { undoChangeTool } from "./tools/undo-change";
 import type { ToolContext, ToolResult } from "./types";
 
 // The ops edit_timeline accepts, as Claude reads them.
@@ -108,5 +110,48 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     },
     answer("edit_timeline", (input) => editTimelineTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "add_text",
+    {
+      title: "Add text",
+      description:
+        "Add one or more text clips from a preset (title, subtitle or lower-third) at a time given in seconds. It finds a free text track or makes one. Defaults: preset title, start 0, 3 seconds. Use this for plain text; use edit_timeline to restyle or move it afterwards. Needs expected_version, like edit_timeline.",
+      inputSchema: z.object({
+        project_id: z.string().min(1),
+        expected_version: z.number().int().min(0),
+        items: z
+          .array(
+            z.object({
+              text: z.string().min(1).max(LIMITS.textClipChars),
+              preset: z.enum(["title", "subtitle", "lower-third"]).optional(),
+              start_seconds: z.number().min(0).optional(),
+              duration_seconds: z.number().positive().optional(),
+              track_id: z.string().min(1).optional(),
+            }),
+          )
+          .min(1)
+          .max(LIMITS.connectorTextItems),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    answer("add_text", (input) => addTextTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "undo_change",
+    {
+      title: "Undo a change",
+      description:
+        "Undo one earlier change to a project, by the version that change produced (edit results and conflict reports name versions). Works for your changes and for other people's, like the editor's Activity list. It is refused if that part of the project was changed afterwards. Needs expected_version, like edit_timeline.",
+      inputSchema: z.object({
+        project_id: z.string().min(1),
+        expected_version: z.number().int().min(0),
+        version: z.number().int().min(1),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    },
+    answer("undo_change", (input) => undoChangeTool(ctx, input)),
   );
 }

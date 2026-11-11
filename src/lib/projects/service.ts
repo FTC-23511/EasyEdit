@@ -158,7 +158,7 @@ async function writeIfUnchanged(
 }
 
 // The result already logged under this request id, or null. A request id belongs to the person who first used it.
-async function priorResult(db: DB, actor: Actor, projectId: string, requestId: string): Promise<AppliedOps | null> {
+export async function getAppliedRequest(db: DB, actor: Actor, projectId: string, requestId: string): Promise<AppliedOps | null> {
   const rows = await db
     .select({ version: projectOps.version, ops: projectOps.ops, inverse: projectOps.inverse, actor: projectOps.actor })
     .from(projectOps)
@@ -211,7 +211,7 @@ export async function applyProjectOps(
     if (!current) throw notFound(input.projectId);
     // A retry of a write that already landed gets the original answer, even after newer edits.
     if (requestId !== null) {
-      const prior = await priorResult(db, actor, input.projectId, requestId);
+      const prior = await getAppliedRequest(db, actor, input.projectId, requestId);
       if (prior) return prior;
     }
     // A strict write is refused unless its base is the current version, so it never lands on edits the caller
@@ -267,7 +267,7 @@ export async function applyProjectOps(
     } catch (error) {
       // The same request id landed first. The whole statement failed, so the doc is unchanged.
       if (requestId !== null && isRequestIdTaken(error)) {
-        const prior = await priorResult(db, actor, input.projectId, requestId);
+        const prior = await getAppliedRequest(db, actor, input.projectId, requestId);
         if (prior) return prior;
       }
       throw error;
