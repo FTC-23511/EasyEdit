@@ -14,7 +14,9 @@ describe("limits", () => {
   it("holds the agreed values", () => {
     expect(LIMITS).toEqual({ projectNameChars: 100, textClipChars: 2000, tracksPerProject: 20, clipsPerTrack: 1000,
       docBytes: 2_097_152, opsPerRequest: 500, opsPageDefault: 100, opsPageMax: 500, opLogRowBytes: 1_048_576,
-      opsPageBytes: 2_097_152, trackNameChars: 100 });
+      opsPageBytes: 2_097_152, trackNameChars: 100, connectorReadChars: 16_000, connectorEchoChars: 6_000,
+      connectorListPage: 50, connectorConflictEntries: 10, connectorTextItems: 20, connectorWritesPerMinute: 30,
+      connectorBytesPerDay: 10_485_760, connectorProjectsPerDay: 50 });
   });
 
   it("text up to 2,000 characters is accepted; 2,001 is INVALID on add and on update", () => {
