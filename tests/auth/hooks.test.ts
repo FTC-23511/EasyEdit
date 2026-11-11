@@ -32,6 +32,17 @@ describe("auth database hooks", () => {
     });
   });
 
+  it("user.create.before rejects an allowlisted email that Google marks unverified", async () => {
+    const db = await makeTestDb();
+    await seedAdmin(db);
+    await expect(
+      makeUserCreateBefore(db)({ email: "admin@seattlesolvers.com", name: "Admin", emailVerified: false }),
+    ).rejects.toMatchObject({
+      status: "FORBIDDEN",
+      body: { message: "NOT_ALLOWLISTED" },
+    });
+  });
+
   it("session.create.before allows an allowlisted user", async () => {
     const db = await makeTestDb();
     await seedAdmin(db);

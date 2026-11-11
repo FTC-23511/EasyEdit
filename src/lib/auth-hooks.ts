@@ -10,9 +10,10 @@ function notAllowlisted(): APIError {
 }
 
 export function makeUserCreateBefore(db: DB) {
-  return async <U extends { email: string }>(newUser: U): Promise<{ data: U }> => {
+  return async <U extends { email: string; emailVerified?: boolean }>(newUser: U): Promise<{ data: U }> => {
     const email = normalizeEmail(newUser.email);
-    if ((await getRole(db, email)) === null) throw notAllowlisted();
+    // An email the provider has not verified proves nothing about who owns it.
+    if (newUser.emailVerified === false || (await getRole(db, email)) === null) throw notAllowlisted();
     return { data: { ...newUser, email } };
   };
 }
