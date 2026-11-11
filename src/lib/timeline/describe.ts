@@ -1,6 +1,6 @@
 import { graphemes } from "@/lib/text";
 import { docDuration } from "./presets";
-import type { Clip, Track, TimelineDoc } from "./types";
+import type { Clip, Track, TimelineDoc, Transform } from "./types";
 
 const TEXT_PREVIEW_CHARS = 40;
 
@@ -18,7 +18,7 @@ const ESCAPES: Record<string, string> = {
   "\u2029": "\\u2029",
 };
 
-function escapeQuoted(text: string): string {
+export function escapeQuoted(text: string): string {
   return text.replace(/[\\"\n\r\t\u2028\u2029]/g, (ch) => ESCAPES[ch]);
 }
 
@@ -37,7 +37,36 @@ function describeClip(clip: Clip, fps: number): string {
   return `  ${clip.id}  ${clip.type}  ${range}  asset=${clip.assetId} in=${framesToSeconds(clip.in, fps)}s speed=${clip.speed} vol=${clip.volume}`;
 }
 
-function describeTrack(track: Track, fps: number): string[] {
+// Scale, rotation and opacity are only worth a word when they are not the defaults.
+function describeTransformChanges(t: Transform): string {
+  let out = "";
+  if (t.scale !== 1) out += ` scale=${t.scale}`;
+  if (t.rotation !== 0) out += ` rotation=${t.rotation}`;
+  if (t.opacity !== 1) out += ` opacity=${t.opacity}`;
+  return out;
+}
+
+function describeClipInDetail(clip: Clip, fps: number): string {
+  const range = `${framesToSeconds(clip.start, fps)}–${framesToSeconds(clip.start + clip.duration, fps)}s`;
+  const frames = `frames ${clip.start}–${clip.start + clip.duration}`;
+  const head = `  ${clip.id}  ${clip.type}  ${range}  ${frames}`;
+  const t = clip.transform;
+  if (clip.type === "text") {
+    const s = clip.style;
+    return (
+      `${head}  "${escapeQuoted(clip.text)}"` +
+      `  font="${escapeQuoted(s.fontFamily)}" size=${s.fontSize} weight=${s.fontWeight} color="${escapeQuoted(s.color)}" align=${s.align} x=${t.x} y=${t.y}` +
+      describeTransformChanges(t)
+    );
+  }
+  return (
+    `${head}  asset="${escapeQuoted(clip.assetId)}" in=${framesToSeconds(clip.in, fps)}s speed=${clip.speed} vol=${clip.volume}` +
+    `  x=${t.x} y=${t.y} fit=${t.fit}` +
+    describeTransformChanges(t)
+  );
+}
+
+function describeTrack(track: Track, fps: number, detail: boolean): string[] {
   const flags = [
     track.hidden && "hidden",
     track.muted && "muted",
@@ -49,16 +78,16 @@ function describeTrack(track: Track, fps: number): string[] {
     lines.push("  (empty)");
   } else {
     const sorted = [...track.clips].sort((a, b) => a.start - b.start);
-    for (const clip of sorted) lines.push(describeClip(clip, fps));
+    for (const clip of sorted) lines.push(detail ? describeClipInDetail(clip, fps) : describeClip(clip, fps));
   }
   return lines;
 }
 
-export function describe(doc: TimelineDoc, opts?: { version?: number }): string {
+export function describe(doc: TimelineDoc, opts?: { version?: number; detail?: boolean }): string {
   const version = opts?.version === undefined ? "" : ` · version ${opts.version}`;
   const lines = [
     `Format ${doc.format} ${doc.width}x${doc.height} @${doc.fps}fps · duration ${framesToSeconds(docDuration(doc), doc.fps)}s${version}`,
   ];
-  for (const track of doc.tracks) lines.push(...describeTrack(track, doc.fps));
+  for (const track of doc.tracks) lines.push(...describeTrack(track, doc.fps, opts?.detail === true));
   return lines.join("\n");
 }

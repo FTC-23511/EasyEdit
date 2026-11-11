@@ -41,7 +41,13 @@ describe("summarizeOps", () => {
     [[{ op: "move_track", trackId: "t1", index: 0 }], "Reordered tracks"],
     [[{ op: "replace_track", track, index: 1, restore: true }], "Restored a track"],
     [[{ op: "set_format", format: "long_16x9" }], "Changed the format to Long 16:9"],
-    [[{ op: "move_clip", clipId: "a", start: 3 }, rm("b")], "Made 2 changes"],
+    [[{ op: "move_clip", clipId: "a", start: 3 }, rm("b")], "Deleted a clip and moved a clip"],
+    [[rm("a"), { op: "add_clip", trackId: "t1", clip: text("n", 0, 30) }, { op: "add_clip", trackId: "t1", clip: text("m", 30, 30) }, { op: "update_clip", clipId: "b", patch: { text: "x" } }],
+      "Added 2 clips, deleted a clip and edited a clip"],
+    [[{ op: "set_format", format: "long_16x9" }, { op: "update_track", trackId: "v1", patch: { locked: true } }, { op: "move_clip", clipId: "a", start: 3 }, { op: "trim_clip", clipId: "a", edge: "end", to: 9 }, { op: "split_clip", clipId: "a", at: 5, newClipId: "b" }],
+      "Moved a clip, trimmed a clip, split a clip and more"],
+    [[{ op: "add_track", track: { id: "t2", kind: "text", name: "Text 2" } }, { op: "move_track", trackId: "t2", index: 0 }], "Changed tracks"],
+    [[{ op: "add_track", track: { id: "t2", kind: "text", name: "Text 2" } }, { op: "add_clip", trackId: "t2", clip: text("n", 0, 30) }, rm("a")], "Added a clip, deleted a clip and changed tracks"],
   ])("%#", (ops, summary) => {
     expect(summarizeOps(ops)).toBe(summary);
   });

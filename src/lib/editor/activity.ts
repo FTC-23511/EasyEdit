@@ -65,7 +65,33 @@ export function summarizeOps(ops: Op[]): string {
   if (only("set_format") && n === 1) {
     return `Changed the format to ${FORMAT_PRESETS[(ops[0] as OpOf<"set_format">).format].label}`;
   }
-  return fallback;
+  return summarizeMixed(ops) ?? fallback;
+}
+
+const MIXED_GROUPS: { match: (op: Op["op"]) => boolean; one: string; many: (n: number) => string }[] = [
+  { match: (k) => k === "add_clip", one: "added a clip", many: (n) => `added ${n} clips` },
+  { match: (k) => k === "remove_clip", one: "deleted a clip", many: (n) => `deleted ${n} clips` },
+  { match: (k) => k === "move_clip", one: "moved a clip", many: (n) => `moved ${n} clips` },
+  { match: (k) => k === "trim_clip", one: "trimmed a clip", many: (n) => `trimmed ${n} clips` },
+  { match: (k) => k === "split_clip", one: "split a clip", many: (n) => `split ${n} clips` },
+  { match: (k) => k === "update_clip", one: "edited a clip", many: (n) => `edited ${n} clips` },
+  { match: (k) => k.endsWith("_track"), one: "changed tracks", many: () => "changed tracks" },
+  { match: (k) => k === "set_format", one: "changed the format", many: () => "changed the format" },
+];
+
+// "A", "A and B", "A, B and C", "A, B, C and more", with the first letter capitalised.
+function summarizeMixed(ops: Op[]): string | null {
+  const parts = MIXED_GROUPS.flatMap((g) => {
+    const n = ops.filter((o) => g.match(o.op)).length;
+    return n === 0 ? [] : [count(n, g.one, g.many)];
+  });
+  if (parts.length === 0) return null;
+  const text =
+    parts.length === 1 ? parts[0]
+    : parts.length === 2 ? `${parts[0]} and ${parts[1]}`
+    : parts.length === 3 ? `${parts[0]}, ${parts[1]} and ${parts[2]}`
+    : `${parts[0]}, ${parts[1]}, ${parts[2]} and more`;
+  return text[0].toUpperCase() + text.slice(1);
 }
 
 // True when the log kept an inverse for this change, so it can be undone.

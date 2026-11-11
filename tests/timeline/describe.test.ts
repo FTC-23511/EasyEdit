@@ -107,4 +107,27 @@ Track a1 [audio] "Audio 1"
     expect(describe(withText("A".repeat(39) + family + "BC"))).toContain(`"${"A".repeat(39)}${family}…"`);
     expect(describe(withText("🇺🇸".repeat(41)))).toContain(`"${"🇺🇸".repeat(40)}…"`);
   });
+
+  it("in detail, shows frames, the whole text, style and position on one line per clip", () => {
+    let d = createEmptyDoc("short_9x16");
+    d = applyOps(d, [
+      { op: "add_clip", trackId: "v1", clip: { id: "c1", type: "video", assetId: "as 1", start: 0, duration: 120, in: 36, speed: 1, volume: 1, transform: { ...DEFAULT_TRANSFORM, scale: 1.5, rotation: -10, opacity: 0.4 } } },
+      { op: "add_clip", trackId: "t1", clip: { id: "x1", type: "text", start: 15, duration: 45, text: `SAY "GO"\n${"A".repeat(50)}`, transform: DEFAULT_TRANSFORM, style: { ...style, fontFamily: "Geist Mono" } } },
+    ]).doc;
+    expect(describe(d, { version: 3, detail: true })).toBe(
+`Format short_9x16 1080x1920 @30fps · duration 4.00s · version 3
+Track v1 [video] "Video 1"
+  c1  video  0.00–4.00s  frames 0–120  asset="as 1" in=1.20s speed=1 vol=1  x=0.5 y=0.5 fit=cover scale=1.5 rotation=-10 opacity=0.4
+Track t1 [text] "Text 1"
+  x1  text  0.50–2.00s  frames 15–60  "SAY \\"GO\\"\\n${"A".repeat(50)}"  font="Geist Mono" size=96 weight=800 color="#FFFFFF" align=center x=0.5 y=0.5
+Track cap [caption] "Captions"
+  (empty)
+Track a1 [audio] "Audio 1"
+  (empty)`);
+  });
+
+  it("without detail, prints exactly what it printed before", () => {
+    expect(describe(withText("A".repeat(43)))).toContain(`  x1  text  0.00–1.00s  "${"A".repeat(40)}…"`);
+    expect(describe(withText("hi"), { detail: false })).toBe(describe(withText("hi")));
+  });
 });
