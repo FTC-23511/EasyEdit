@@ -3,36 +3,14 @@ import { z } from "zod";
 import { LIMITS } from "@/lib/limits";
 import { FormatId } from "@/lib/timeline";
 import { UNEXPECTED } from "./errors";
+import { EDIT_DESCRIPTION, buildEditingGuide } from "./guide";
 import { addTextTool } from "./tools/add-text";
 import { createProjectTool } from "./tools/create-project";
 import { editTimelineTool } from "./tools/edit-timeline";
 import { getProjectTool } from "./tools/get-project";
 import { listProjectsTool } from "./tools/list-projects";
 import { undoChangeTool } from "./tools/undo-change";
-import type { ToolContext, ToolResult } from "./types";
-
-// The ops edit_timeline accepts, as Claude reads them.
-export const EDIT_DESCRIPTION = `Change a project's timeline with a batch of ops. The whole batch is applied, or none of it.
-
-Always pass expected_version: the version from your latest get_project, create_project or edit result for this project. If the project changed since, nothing is applied and you get the changes and the current project back.
-
-Times are whole frames: frame = seconds × fps, and the project's first line gives fps. Ids come from get_project. Leave "id" out of new clips and tracks; the result lists the ids the server made.
-
-Ops:
-{"op":"add_clip","trackId":T,"clip":CLIP,"ripple":true}      ripple is optional: it pushes later clips right
-{"op":"remove_clip","clipId":C,"ripple":true}               ripple is optional: it closes the gap
-{"op":"move_clip","clipId":C,"start":F,"trackId":T}         trackId is optional: another track
-{"op":"trim_clip","clipId":C,"edge":"start"|"end","to":F}   to is the new timeline frame of that edge
-{"op":"split_clip","clipId":C,"at":F}                       the second half gets a new id
-{"op":"update_clip","clipId":C,"patch":{...}}               text, style{...}, transform{...}; never start or duration
-{"op":"add_track","track":{"kind":"video"|"overlay"|"text"|"audio","name":S},"index":N}   index is optional
-{"op":"update_track","trackId":T,"patch":{"name":S,"muted":B,"hidden":B,"locked":B}}       any of the four
-{"op":"move_track","trackId":T,"index":N}                   a later track draws on top
-{"op":"remove_track","trackId":T}
-{"op":"set_format","format":"short_9x16"|"feed_4x5"|"square_1x1"|"long_16x9"|"long_4k"}
-
-A text CLIP: {"type":"text","start":F,"duration":F,"text":S,"transform":{"x":0.5,"y":0.5,"scale":1,"rotation":0,"opacity":1,"fit":"contain"},"style":{"fontFamily":"Geist","fontSize":96,"fontWeight":700,"color":"#ffffff","align":"center"}}
-x and y place the clip's center as a fraction of the frame: 0.5, 0.5 is the middle. Only text clips can be added today. For plain text, add_text is simpler.`;
+import { ok, type ToolContext, type ToolResult } from "./types";
 
 // A database error code (such as "22021"), on the error or its cause. Only a short plain token is taken.
 function errorCode(error: unknown): string | undefined {
@@ -60,7 +38,33 @@ function answer<Input>(name: string, tool: (input: Input) => Promise<ToolResult>
   };
 }
 
+const GUIDE_URI = "easyedit://editing-guide";
+
 export function registerTools(server: McpServer, ctx: ToolContext): void {
+  server.registerTool(
+    "get_editing_guide",
+    {
+      title: "Editing guide",
+      description:
+        "How to edit well in this app: how a project is built, what is possible today, and rules for short videos. Read it once before your first edit in a conversation.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    answer("get_editing_guide", async () => ok(buildEditingGuide())),
+  );
+
+  server.registerPrompt(
+    "editing-guide",
+    { title: "Editing guide", description: "Load the Seattle Solvers Studio editing guide into the conversation." },
+    () => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: buildEditingGuide() } }] }),
+  );
+
+  server.registerResource(
+    "editing-guide",
+    GUIDE_URI,
+    { title: "Editing guide", mimeType: "text/markdown" },
+    () => ({ contents: [{ uri: GUIDE_URI, mimeType: "text/markdown", text: buildEditingGuide() }] }),
+  );
+
   server.registerTool(
     "list_projects",
     {

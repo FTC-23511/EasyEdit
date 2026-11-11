@@ -5,6 +5,7 @@ import { getAuth } from "@/lib/auth";
 import { refusalResponse, resolveConnectorCaller } from "@/lib/connector/caller";
 import { mcpResourceUrl } from "@/lib/connector/config";
 import { toolContextFor } from "@/lib/mcp/context";
+import { SERVER_INSTRUCTIONS } from "@/lib/mcp/guide";
 import { registerTools } from "@/lib/mcp/server";
 
 // The one place a bearer token is accepted. It never reads the session cookie and has no cross-origin rule:
@@ -21,6 +22,7 @@ export function POST(request: Request): Promise<Response> {
       if (!caller.ok) return refusalResponse(caller.reason);
       const handler = createMcpHandler((server) => registerTools(server, toolContextFor(caller.user)), {
         serverInfo: { name: "easyedit", version: "1.0.0" },
+        instructions: SERVER_INSTRUCTIONS,
       });
       return handler(req);
     },
