@@ -6,6 +6,7 @@ import { betterAuth } from "better-auth";
 import { jwt } from "better-auth/plugins";
 import { getDb } from "@/db";
 import { makeSessionCreateBefore, makeUserCreateBefore } from "@/lib/auth-hooks";
+import { connectorBeforeHook, isClaudeClientDocument, isClaudeRedirect } from "@/lib/connector/auth-rules";
 import { DYNAMIC_REGISTRATION, mcpResourceUrl } from "@/lib/connector/config";
 import { requiredEnv } from "@/lib/env";
 
@@ -49,11 +50,24 @@ function createAuth() {
         consentPage: "/consent",
         allowDynamicClientRegistration: DYNAMIC_REGISTRATION,
         allowUnauthenticatedClientRegistration: DYNAMIC_REGISTRATION,
+        grantTypes: ["authorization_code", "refresh_token"],
+        // A member is only ever sent back to Claude, whatever an app registered.
+        validateRedirectUri: (uri, _registered, matches) => matches && isClaudeRedirect(uri),
+        // Nobody manages apps through the API.
+        clientPrivileges: () => false,
       }),
-      cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
+      cimd({
+        fetchClientMetadataResource,
+        metadataProfile: "mcp-2026-07-28",
+        isMetadataDocumentUrlAllowed: (url) => isClaudeClientDocument(url),
+      }),
     ],
-    // Counted in the database: an in-memory count would reset with every new server instance.
-    rateLimit: { storage: "database" },
+    // On everywhere, not only in production. Counted in the database: an in-memory count would
+    // reset with every new server instance.
+    rateLimit: { enabled: true, storage: "database" },
+    // The jwt plugin's session-to-token endpoint is off. The only tokens handed out are the connector's.
+    disabledPaths: ["/token"],
+    hooks: { before: connectorBeforeHook(db) },
   });
 }
 
