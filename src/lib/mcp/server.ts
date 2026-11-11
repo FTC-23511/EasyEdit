@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { FormatId } from "@/lib/timeline";
 import { UNEXPECTED } from "./errors";
+import { createProjectTool } from "./tools/create-project";
 import { getProjectTool } from "./tools/get-project";
 import { listProjectsTool } from "./tools/list-projects";
 import type { ToolContext, ToolResult } from "./types";
@@ -41,5 +43,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     answer("get_project", (input) => getProjectTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "create_project",
+    {
+      title: "Create a project",
+      description:
+        "Create an empty project with a name and a format: short_9x16 (1080×1920, Reels and Shorts), feed_4x5 (1080×1350), square_1x1 (1080×1080), long_16x9 (1920×1080) or long_4k (3840×2160). Returns the new project's id, its version (0) and its starting tracks.",
+      inputSchema: z.object({ name: z.string(), format: FormatId }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    answer("create_project", (input) => createProjectTool(ctx, input)),
   );
 }
