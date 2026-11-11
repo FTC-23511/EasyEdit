@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { UNEXPECTED } from "./errors";
+import { getProjectTool } from "./tools/get-project";
 import { listProjectsTool } from "./tools/list-projects";
 import type { ToolContext, ToolResult } from "./types";
 
@@ -28,5 +29,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     answer("list_projects", (input) => listProjectsTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "get_project",
+    {
+      title: "Read a project",
+      description:
+        "Read one project's timeline as text: its format, version, tracks and clips, with times in seconds and in frames and every clip's id. Call this before changing a project, and pass the version it reports as expected_version. Long projects come in pages: pass cursor to read on.",
+      inputSchema: z.object({ project_id: z.string().min(1), cursor: z.number().int().min(0).optional() }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    answer("get_project", (input) => getProjectTool(ctx, input)),
   );
 }
