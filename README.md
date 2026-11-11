@@ -18,7 +18,7 @@ What's next: uploading video, the real timeline editor, exports and posting.
 
 You need:
 
-- [Node.js](https://nodejs.org) version 24
+- [Node.js](https://nodejs.org) 24 or newer
 - [pnpm](https://pnpm.io/installation) version 11
 - A Google account that can use Google Cloud
 - A free [Neon](https://neon.tech) account
@@ -26,6 +26,8 @@ You need:
 Download the code and install it:
 
 ```bash
+git clone https://github.com/FTC-23511/EasyEdit.git
+cd EasyEdit
 pnpm install
 ```
 
@@ -37,7 +39,11 @@ pnpm install
 4. Fill in the app name (`EasyEdit`) and your email for support. Click **Next**.
 5. For Audience, choose **External**. Click **Next**.
 6. Enter your email as the contact, agree to the policy, and click **Create**.
-7. This app only asks Google for name, email and profile, so teammates should be able to sign in without being listed anywhere in Google Cloud. This has not been confirmed with a real sign-in yet (see the first-run checklist). If Google blocks someone anyway, open **Audience**, find **Test users**, click **Add users**, add their Google account, and click **Save**. Each new person you add on the Admin page may need the same treatment.
+7. Choose who can reach the Google sign-in. There are two ways. The first is recommended.
+    - **Publish the app.** Open **Audience** and click **Publish app**. This app asks Google only for name, email and profile picture, which should not need Google's verification. Then any Google account can reach the sign-in, and the allowlist decides who gets in.
+    - **Or keep it in Testing.** Open **Audience**, find **Test users**, click **Add users**, add each teammate's Google account, and click **Save** (up to 100 people). Every person you add on the Admin page then also has to be added here.
+
+    Neither way has been confirmed with a real sign-in yet. The first-run checklist below checks it.
 8. Open **Clients** (or **APIs & Services**, then **Credentials**) and click **Create client** (or **Create credentials**, then **OAuth client ID**).
 9. For Application type, choose **Web application**. Name it `EasyEdit web`.
 10. Under **Authorized redirect URIs**, click **Add URI** and enter exactly:
@@ -113,7 +119,7 @@ These checks need a real Google client and a real database, so work through them
 **Sign-in**
 
 - [ ] Signing in as `admin@seattlesolvers.com` takes you to `/dashboard`.
-- [ ] A teammate with a personal Google account who is on the allowlist can sign in without being added as a Google test user. If Google blocks them, add them as a test user and note that in this README.
+- [ ] A teammate with a personal Google account who is on the allowlist can sign in. If you published the app (step 1, item 7), they should not need to be a Google test user. If you kept it in Testing, add them as a test user first. If Google blocks them, use the other way from step 1, item 7.
 - [ ] Signing in with a Google account that is not on the allowlist sends you back to `/login` with the message that the account isn't on the allowlist.
 
 **Admin page** (signed in as the admin)
@@ -126,7 +132,7 @@ These checks need a real Google client and a real database, so work through them
 **Projects** (signed in as admin)
 
 - [ ] On the dashboard, create a project and open it. A text summary of an empty project shows.
-- [ ] Add a clip through the API and refresh the project page. The clip shows up. To try it, copy the project id from the page address (`/editor/<id>`), copy your `cookie` request header from your browser's developer tools (Network tab, any request to the app), and run:
+- [ ] Add a clip through the API and refresh the project page. The clip shows up. To try it, copy the project id from the page address (`/editor/<id>`), copy the value of the `Cookie` request header from your browser's developer tools (Network tab, click any request to the app, then look under **Request Headers**), and run:
 
     ```bash
     curl -X POST http://localhost:3000/api/projects/<id>/ops \
@@ -136,6 +142,34 @@ These checks need a real Google client and a real database, so work through them
     ```
 
     The answer starts with `{"version":1`.
+
+    The cookie is a secret, like `.env.local`: anyone who has it is signed in as you. Do not paste it into chats, issues or commits.
+
+## Deploy to Vercel
+
+The app is meant to run on Vercel for free, on the Hobby tier. Nobody has run these steps yet, so expect to fix small things the first time.
+
+1. Sign in at [vercel.com](https://vercel.com), click **Add New**, then **Project**, and import the `EasyEdit` repository from GitHub. Vercel recognizes it as a Next.js app. Leave the build settings as they are.
+2. Before you deploy, open **Environment Variables** and add the same five names as in `.env.local`:
+
+    | Name | What to put |
+    | --- | --- |
+    | `DATABASE_URL` | The Neon connection string for the database the deployed app should use |
+    | `BETTER_AUTH_SECRET` | A new random text from `openssl rand -base64 32` |
+    | `BETTER_AUTH_URL` | The deployed web address, for example `https://your-app.vercel.app`, with no slash at the end |
+    | `GOOGLE_CLIENT_ID` | The Client ID from step 1 |
+    | `GOOGLE_CLIENT_SECRET` | The Client secret from step 1 |
+
+    Then click **Deploy**. If you don't know the web address until the first deploy finishes, set `BETTER_AUTH_URL` afterwards and redeploy.
+3. In Google Cloud, open your OAuth client (step 1, item 10) and add the deployed redirect URI, for example `https://your-app.vercel.app/api/auth/callback/google`. Click **Save**.
+4. Once, from the project folder on your computer, create the tables and the first admin in the production database. Put the production connection string in front of each command. It takes precedence over the one in `.env.local`:
+
+    ```bash
+    DATABASE_URL='<production connection string>' pnpm db:migrate
+    DATABASE_URL='<production connection string>' pnpm db:seed
+    ```
+
+    `.env.local` must still exist, because `pnpm db:seed` reads it.
 
 ## Who can do what
 
@@ -180,13 +214,13 @@ All routes need you to be signed in (they use the same cookie as the website). B
 
 Edits are versioned. Send the version you last saw as `baseVersion`. Changes that do not clash with newer edits still apply. A `baseVersion` newer than the project is refused.
 
-Every error has this shape:
+When a route refuses a request, the answer has this shape:
 
 ```json
 { "code": "CONFLICT", "message": "...", "opIndex": 0, "currentVersion": 3 }
 ```
 
-`opIndex` (which op failed) and `currentVersion` only appear when they apply.
+`opIndex` (which op failed) and `currentVersion` only appear when they apply. An unexpected failure on the server (for example, the database is down) answers `500` without this shape.
 
 | Status | `code` | Meaning |
 | --- | --- | --- |
@@ -214,6 +248,7 @@ Every error has this shape:
 ## If something goes wrong
 
 - **Google says `redirect_uri_mismatch`.** The redirect URI in Google Cloud does not exactly match `<BETTER_AUTH_URL>/api/auth/callback/google`. Fix it in step 1.
-- **Google blocks an account that is on the allowlist.** Add that account under **Audience**, then **Test users** in Google Cloud (step 1, item 7), and tell the team in this README if it turns out to be needed.
+- **Google blocks an account that is on the allowlist.** If the app is still in Testing, add that account under **Audience**, then **Test users** in Google Cloud, or publish the app (step 1, item 7).
 - **"DATABASE_URL is not set" or similar.** `.env.local` is missing or has an empty value.
 - **You land on `/login` with the allowlist message.** Ask an admin to add your email on the Admin page.
+- **You land on `/login` with "Sign-in didn't finish".** Sign-in was cancelled or failed partway. Try again. If it keeps happening, ask an admin to check that you're on the allowlist.
