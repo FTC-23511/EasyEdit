@@ -14,6 +14,7 @@ function createAuth() {
   return betterAuth({
     // neon-http cannot run transactions, so the adapter must never open one.
     database: drizzleAdapter(db, { provider: "pg", transaction: false }),
+    secret: requiredEnv("BETTER_AUTH_SECRET"),
     trustedOrigins: [requiredEnv("BETTER_AUTH_URL")],
     emailAndPassword: { enabled: false },
     socialProviders: {
