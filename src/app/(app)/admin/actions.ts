@@ -18,3 +18,7 @@ export async function setRoleAction(formData: FormData) {
 export async function removeMemberAction(formData: FormData) {
   return actions.removeMember(formData);
 }
+
+export async function disconnectClaudeAction(formData: FormData) {
+  return actions.disconnectClaude(formData);
+}

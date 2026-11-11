@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { ConfirmButton } from "../confirm-button";
 import { ErrorText, useAction } from "../action-ui";
-import { addMemberAction, removeMemberAction, setRoleAction } from "./actions";
+import { addMemberAction, disconnectClaudeAction, removeMemberAction, setRoleAction } from "./actions";
 
 const ROLE_OPTIONS = ["admin", "editor", "viewer"] as const;
 
@@ -49,6 +49,26 @@ export function RemoveButton({ email }: { email: string }) {
         label="Remove"
         question={`Remove ${email}?`}
         confirmLabel="Remove"
+        pending={pending}
+        onConfirm={() => {
+          const formData = new FormData();
+          formData.set("email", email);
+          submit(formData);
+        }}
+      />
+      <ErrorText message={error} />
+    </div>
+  );
+}
+
+export function DisconnectButton({ email }: { email: string }) {
+  const { error, pending, submit } = useAction(disconnectClaudeAction);
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <ConfirmButton
+        label="Disconnect"
+        question={`Disconnect Claude for ${email}?`}
+        confirmLabel="Disconnect"
         pending={pending}
         onConfirm={() => {
           const formData = new FormData();

@@ -1,5 +1,6 @@
 import type { DB } from "@/db";
 import type { CurrentUser } from "@/lib/access-rules";
+import { revokeAccess } from "@/lib/connector/grants";
 import { addEntry, AllowlistError, normalizeEmail, removeEntry, setRole, type Role } from "@/lib/allowlist/service";
 
 export type ActionResult = { error?: string };
@@ -58,6 +59,11 @@ export function makeAdminActions(deps: AdminActionDeps) {
     removeMember: (formData: FormData) =>
       run(async (_admin, db) => {
         await removeEntry(db, textField(formData, "email"));
+      }),
+    // Ends the member's Claude connection only; their website sessions stay.
+    disconnectClaude: (formData: FormData) =>
+      run(async (_admin, db) => {
+        await revokeAccess(db, { email: normalizeEmail(textField(formData, "email")) }, { sessions: false });
       }),
   };
 }
