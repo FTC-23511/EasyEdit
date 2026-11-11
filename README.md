@@ -39,11 +39,11 @@ pnpm install
 4. Fill in the app name (`EasyEdit`) and your email for support. Click **Next**.
 5. For Audience, choose **External**. Click **Next**.
 6. Enter your email as the contact, agree to the policy, and click **Create**.
-7. Choose who can reach the Google sign-in. There are two ways. The first is recommended.
-    - **Publish the app.** Open **Audience** and click **Publish app**. This app asks Google only for name, email and profile picture, which should not need Google's verification. Then any Google account can reach the sign-in, and the allowlist decides who gets in.
-    - **Or keep it in Testing.** Open **Audience**, find **Test users**, click **Add users**, add each teammate's Google account, and click **Save** (up to 100 people). Every person you add on the Admin page then also has to be added here.
+7. Add the people who may sign in as test users. Open **Audience**, find **Test users**, click **Add users**, enter each person's Google account, and click **Save** (up to 100 people). Start with `admin@seattlesolvers.com`.
 
-    Neither way has been confirmed with a real sign-in yet. The first-run checklist below checks it.
+    A new Google app starts in "Testing", where only test users can reach the Google sign-in. So everyone you add on the Admin page also has to be added here.
+
+    Publishing the app lifts that limit, but Google keeps **Publish app** greyed out until the **Branding** page is filled in. That needs a deployed site, so come back to it after [Deploy to Vercel](#deploy-to-vercel).
 8. Open **Clients** (or **APIs & Services**, then **Credentials**) and click **Create client** (or **Create credentials**, then **OAuth client ID**).
 9. For Application type, choose **Web application**. Name it `EasyEdit web`.
 10. Under **Authorized redirect URIs**, click **Add URI** and enter exactly:
@@ -119,7 +119,7 @@ These checks need a real Google client and a real database, so work through them
 **Sign-in**
 
 - [ ] Signing in as `admin@seattlesolvers.com` takes you to `/dashboard`.
-- [ ] A teammate with a personal Google account who is on the allowlist can sign in. If you published the app (step 1, item 7), they should not need to be a Google test user. If you kept it in Testing, add them as a test user first. If Google blocks them, use the other way from step 1, item 7.
+- [ ] A teammate who is on the allowlist and is a Google test user (step 1, item 7) can sign in.
 - [ ] Signing in with a Google account that is not on the allowlist sends you back to `/login` with the message that the account isn't on the allowlist.
 
 **Admin page** (signed in as the admin)
@@ -170,6 +170,7 @@ The app is meant to run on Vercel for free, on the Hobby tier. Nobody has run th
     ```
 
     `.env.local` must still exist, because `pnpm db:seed` reads it.
+5. Optional: publish the Google app, so teammates no longer have to be test users. In Google Cloud, open **Branding** and fill in the app domain details (home page, privacy policy link, authorized domain) with your deployed web address. You will need a public privacy policy page to link to. Then open **Audience** and click **Publish app**. This app only asks Google for name, email and profile picture, and the allowlist still decides who gets in.
 
 ## Who can do what
 
@@ -248,7 +249,7 @@ When a route refuses a request, the answer has this shape:
 ## If something goes wrong
 
 - **Google says `redirect_uri_mismatch`.** The redirect URI in Google Cloud does not exactly match `<BETTER_AUTH_URL>/api/auth/callback/google`. Fix it in step 1.
-- **Google blocks an account that is on the allowlist.** If the app is still in Testing, add that account under **Audience**, then **Test users** in Google Cloud, or publish the app (step 1, item 7).
+- **Google blocks an account that is on the allowlist.** While the Google app is in Testing, that account also has to be a test user. Add it under **Audience**, then **Test users** in Google Cloud (step 1, item 7).
 - **"DATABASE_URL is not set" or similar.** `.env.local` is missing or has an empty value.
 - **You land on `/login` with the allowlist message.** Ask an admin to add your email on the Admin page.
 - **You land on `/login` with "Sign-in didn't finish".** Sign-in was cancelled or failed partway. Try again. If it keeps happening, ask an admin to check that you're on the allowlist.
