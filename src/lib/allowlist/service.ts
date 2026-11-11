@@ -30,6 +30,9 @@ function validEmail(e: string): string {
   return email;
 }
 
+// Locks every admin row in a fixed order so concurrent statements that could remove an admin serialize.
+const LOCKED_ADMINS = sql`admins as (select email from allowlist where role = 'admin' order by email for update)`;
+
 const lastAdminError = () => new AllowlistError("LAST_ADMIN", "Cannot remove or demote the last admin");
 
 export async function getRole(db: DB, email: string): Promise<Role | null> {
@@ -62,12 +65,13 @@ export async function addEntry(
   const invitedBy = normalizeEmail(input.invitedBy);
   // One statement: a conflicting row is only changed if it is not the last admin being demoted.
   const result = await db.execute(sql`
+    with ${LOCKED_ADMINS}
     insert into allowlist (email, role, invited_by)
     values (${email}, ${input.role}, ${invitedBy})
     on conflict (email) do update set role = excluded.role
     where allowlist.role <> 'admin'
        or excluded.role = 'admin'
-       or exists (select 1 from allowlist a where a.role = 'admin' and a.email <> allowlist.email)
+       or (select count(*) from admins) > 1
     returning email
   `);
   if (rowsOf(result).length === 0) throw lastAdminError();
@@ -76,12 +80,13 @@ export async function addEntry(
 export async function setRole(db: DB, email: string, role: Role): Promise<void> {
   const target = normalizeEmail(email);
   const result = await db.execute(sql`
+    with ${LOCKED_ADMINS}
     update allowlist set role = ${role}
     where email = ${target}
       and (
         role <> 'admin'
         or ${role} = 'admin'
-        or exists (select 1 from allowlist a where a.role = 'admin' and a.email <> ${target})
+        or (select count(*) from admins) > 1
       )
     returning email
   `);
@@ -92,11 +97,12 @@ export async function setRole(db: DB, email: string, role: Role): Promise<void> 
 export async function removeEntry(db: DB, email: string): Promise<void> {
   const target = normalizeEmail(email);
   const result = await db.execute(sql`
+    with ${LOCKED_ADMINS}
     delete from allowlist
     where email = ${target}
       and (
         role <> 'admin'
-        or exists (select 1 from allowlist a where a.role = 'admin' and a.email <> ${target})
+        or (select count(*) from admins) > 1
       )
     returning email
   `);
