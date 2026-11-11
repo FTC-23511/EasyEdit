@@ -1,14 +1,18 @@
 import Link from "next/link";
 import { getDb } from "@/db";
 import { meetsRole, requireUser } from "@/lib/access";
+import { actorUserId, displayActor } from "@/lib/projects/display-actor";
 import { listProjects } from "@/lib/projects/service";
+import { getUserNames } from "@/lib/projects/user-names";
 import { FORMAT_PRESETS } from "@/lib/timeline";
 import { timeAgo } from "@/lib/time-ago";
 import { createProjectAction } from "./actions";
 
 export default async function DashboardPage() {
   const user = await requireUser();
-  const projects = await listProjects(getDb());
+  const db = getDb();
+  const projects = await listProjects(db);
+  const names = await getUserNames(db, projects.map((project) => actorUserId(project.updatedBy)));
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-6 py-10">
@@ -58,7 +62,7 @@ export default async function DashboardPage() {
                   {FORMAT_PRESETS[project.format].label}
                 </span>
                 <span className="text-xs text-zinc-600 dark:text-zinc-400">
-                  updated by {project.updatedBy} · {timeAgo(project.updatedAt)}
+                  updated by {displayActor(project.updatedBy, names)} · {timeAgo(project.updatedAt)}
                 </span>
               </Link>
             </li>
