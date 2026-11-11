@@ -17,6 +17,7 @@ This README gets the app running on your own computer. You will set up three thi
 - Every change is saved as you make it. Other people's changes show up within about two seconds while you are working, and the top bar says who is editing.
 - Viewers get the same editor, read-only: they can play and look, but not change anything.
 - A project API (see [The project API](#the-project-api)).
+- Claude can list, read, create and edit projects for a signed-in member, through a connector added in claude.ai.
 
 The editor needs a window at least 1024 px wide. Changes made while offline or signed out wait in the open tab and are sent once you are back. They are not kept if the tab is closed or reloaded first, and the browser asks before that happens. The browser's Back button does not ask, so use **Projects** to leave while changes are waiting.
 
@@ -202,6 +203,41 @@ The app is meant to run on Vercel for free, on the Hobby tier. Nobody has run th
     `.env.local` must still exist, because `pnpm db:seed` reads it.
 5. Optional: publish the Google app, so teammates no longer have to be test users. In Google Cloud, open **Branding** and fill in the app domain details (home page, privacy policy link, authorized domain) with your deployed web address. You will need a public privacy policy page to link to. Then open **Audience** and click **Publish app**. This app only asks Google for name, email and profile picture, and the allowlist still decides who gets in.
 
+## Connect Claude
+
+A member can connect Claude to the app and ask it to read and change projects for them. Claude works as that member, with their role.
+
+**Before deploying a version with the connector:** run the migration against the database first (`pnpm db:migrate`, with the production `DATABASE_URL` as in [Deploy to Vercel](#deploy-to-vercel), step 4), then deploy. With the tables missing, sign-in fails.
+
+**Add the connector:**
+
+1. In claude.ai open **Settings**, then **Connectors**, then **Add custom connector**.
+2. Enter exactly `<BETTER_AUTH_URL>/api/mcp`, for example `https://your-app.vercel.app/api/mcp`. Add it, then click **Connect**.
+3. Sign in with Google if you are asked to.
+4. Check the "Connect Claude" page: it names your account and says what Claude will be able to do. Press **Allow**.
+
+**What Claude can do:**
+
+| Tool | What it does |
+| --- | --- |
+| `list_projects` | Lists the team's projects, newest change first, and says who you are signed in as. |
+| `get_project` | Reads one project's timeline as text: tracks, clips, times and the current version. |
+| `create_project` | Creates an empty project with a name and one of the five formats. |
+| `edit_timeline` | Applies a list of changes to a project, all or nothing. |
+| `add_text` | Adds one or more text clips from a preset (title, subtitle or lower third). |
+| `undo_change` | Undoes one earlier change, Claude's or a person's, like **Undo this change** in the editor. |
+| `get_editing_guide` | Reads the guide to how projects are built and what is possible today. |
+
+Claude cannot add video, images or audio yet.
+
+**Roles:** a viewer's Claude can read projects but not change them. An editor's Claude can create and change them. Every change Claude makes is listed in the editor's **Activity** as "Claude (for <name>)" and can be undone there. A change from Claude is refused if the project changed since Claude last read it, and Claude is told what changed, so it never overwrites an edit it has not seen.
+
+**Limits:** through Claude, each member gets 30 changes a minute, 10 MB of change data a day and 50 new projects a day. One page of a read is 16,000 characters; longer projects come in several pages.
+
+**Ending a connection:** the Admin page shows "Connected" next to each member whose Claude is connected. To end a connection, remove the connector in claude.ai, or an admin clicks **Disconnect** next to the member on the Admin page. Removing a member ends it too. Signing out of the website does not end a connection that Claude made with the `offline_access` scope.
+
+**Only claude.ai can connect.** Other clients are refused by their callback address. The allowed callback addresses and hosts are in `src/lib/connector/config.ts`.
+
 ## Who can do what
 
 Every person on the allowlist has one of three roles.
@@ -218,6 +254,7 @@ Some rules:
 - A Google account whose email Google has not verified is always rejected.
 - There must always be at least one admin. The last admin cannot be demoted or removed.
 - Removing someone signs them out right away. They are sent to `/login` on their next request.
+- Removing someone also ends their Claude connection right away.
 - You stay signed in for 30 days after your last visit. Each visit starts the 30 days again.
 
 ## Project formats
@@ -294,3 +331,10 @@ When a route refuses a request, the answer has this shape:
 - **"DATABASE_URL is not set" or similar.** `.env.local` is missing or has an empty value.
 - **You land on `/login` with the allowlist message.** Ask an admin to add your email on the Admin page.
 - **You land on `/login` with "Sign-in didn't finish".** Sign-in was cancelled or failed partway. Try again. If it keeps happening, ask an admin to check that you're on the allowlist.
+- **claude.ai cannot reach or add the connector.** A discovery address is wrong, or `BETTER_AUTH_URL` has a slash at the end. Check that `<BETTER_AUTH_URL>/.well-known/oauth-protected-resource/api/mcp` shows `"resource":"<BETTER_AUTH_URL>/api/mcp"` and `<BETTER_AUTH_URL>/.well-known/oauth-authorization-server/api/auth` shows `"issuer":"<BETTER_AUTH_URL>/api/auth"`, and remove any slash at the end of `BETTER_AUTH_URL`.
+- **While connecting Claude, the browser lands on `/api/auth/error?error=invalid_redirect`.** Claude used a callback address that is not on the list. Note the `redirect_uri` from the address bar and add it to `CLAUDE_REDIRECT_URIS` in `src/lib/connector/config.ts`.
+- **While connecting Claude, the browser shows `invalid_client`, or "client_id URL is not permitted".** Claude's metadata document is on another host. Note the `client_id` from the address bar and add its host to `CLIENT_DOCUMENT_HOSTS` in `src/lib/connector/config.ts`.
+- **After Google you land on the dashboard, not on "Connect Claude".** The login hand-off did not carry the request. Start Connect again in claude.ai while signed in to the website, and report it.
+- **Claude is connected, but every tool call fails and claude.ai asks to reconnect in a loop.** Claude did not send the `resource` value, so its token is not bound to `<BETTER_AUTH_URL>/api/mcp`. The endpoint has to be changed to check such tokens another way; report it.
+- **"Too many requests" while signing in or connecting.** The rate limit. Wait a minute.
+- **The website's own sign-in answers with an error after a deploy.** The migration is not on the live database. Run `pnpm db:migrate` against it (see [Connect Claude](#connect-claude)), or use Vercel's **Promote** on the previous deployment to go back.
