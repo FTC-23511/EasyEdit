@@ -1,11 +1,36 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { LIMITS } from "@/lib/limits";
 import { FormatId } from "@/lib/timeline";
 import { UNEXPECTED } from "./errors";
 import { createProjectTool } from "./tools/create-project";
+import { editTimelineTool } from "./tools/edit-timeline";
 import { getProjectTool } from "./tools/get-project";
 import { listProjectsTool } from "./tools/list-projects";
 import type { ToolContext, ToolResult } from "./types";
+
+// The ops edit_timeline accepts, as Claude reads them.
+export const EDIT_DESCRIPTION = `Change a project's timeline with a batch of ops. The whole batch is applied, or none of it.
+
+Always pass expected_version: the version from your latest get_project, create_project or edit result for this project. If the project changed since, nothing is applied and you get the changes and the current project back.
+
+Times are whole frames: frame = seconds × fps, and the project's first line gives fps. Ids come from get_project. Leave "id" out of new clips and tracks; the result lists the ids the server made.
+
+Ops:
+{"op":"add_clip","trackId":T,"clip":CLIP,"ripple":true}      ripple is optional: it pushes later clips right
+{"op":"remove_clip","clipId":C,"ripple":true}               ripple is optional: it closes the gap
+{"op":"move_clip","clipId":C,"start":F,"trackId":T}         trackId is optional: another track
+{"op":"trim_clip","clipId":C,"edge":"start"|"end","to":F}   to is the new timeline frame of that edge
+{"op":"split_clip","clipId":C,"at":F}                       the second half gets a new id
+{"op":"update_clip","clipId":C,"patch":{...}}               text, style{...}, transform{...}; never start or duration
+{"op":"add_track","track":{"kind":"video"|"overlay"|"text"|"audio","name":S},"index":N}   index is optional
+{"op":"update_track","trackId":T,"patch":{"name":S,"muted":B,"hidden":B,"locked":B}}       any of the four
+{"op":"move_track","trackId":T,"index":N}                   a later track draws on top
+{"op":"remove_track","trackId":T}
+{"op":"set_format","format":"short_9x16"|"feed_4x5"|"square_1x1"|"long_16x9"|"long_4k"}
+
+A text CLIP: {"type":"text","start":F,"duration":F,"text":S,"transform":{"x":0.5,"y":0.5,"scale":1,"rotation":0,"opacity":1,"fit":"contain"},"style":{"fontFamily":"Geist","fontSize":96,"fontWeight":700,"color":"#ffffff","align":"center"}}
+x and y place the clip's center as a fraction of the frame: 0.5, 0.5 is the middle. Only text clips can be added today. For plain text, add_text is simpler.`;
 
 // Every tool answers through here. A thrown error is logged by tool name only (never its arguments) and Claude reads UNEXPECTED.
 function answer<Input>(name: string, tool: (input: Input) => Promise<ToolResult>) {
@@ -55,5 +80,20 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     answer("create_project", (input) => createProjectTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "edit_timeline",
+    {
+      title: "Edit the timeline",
+      description: EDIT_DESCRIPTION,
+      inputSchema: z.object({
+        project_id: z.string().min(1),
+        expected_version: z.number().int().min(0),
+        ops: z.array(z.record(z.string(), z.unknown())).min(1).max(LIMITS.opsPerRequest),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    },
+    answer("edit_timeline", (input) => editTimelineTool(ctx, input)),
   );
 }
