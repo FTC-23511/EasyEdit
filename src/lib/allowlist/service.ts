@@ -63,15 +63,16 @@ export async function addEntry(
 ): Promise<void> {
   const email = validEmail(input.email);
   const invitedBy = normalizeEmail(input.invitedBy);
+  // The insert's source row comes from the locked-admins CTE, so admin rows are locked before the target row.
   // One statement: a conflicting row is only changed if it is not the last admin being demoted.
   const result = await db.execute(sql`
-    with ${LOCKED_ADMINS}
+    with ${LOCKED_ADMINS}, n as (select count(*) as c from admins)
     insert into allowlist (email, role, invited_by)
-    values (${email}, ${input.role}, ${invitedBy})
+    select ${email}::text, ${input.role}::text, ${invitedBy}::text from n
     on conflict (email) do update set role = excluded.role
     where allowlist.role <> 'admin'
        or excluded.role = 'admin'
-       or (select count(*) from admins) > 1
+       or (select c from n) > 1
     returning email
   `);
   if (rowsOf(result).length === 0) throw lastAdminError();
