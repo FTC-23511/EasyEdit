@@ -2,6 +2,7 @@ import { asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { rowsOf, type DB } from "@/db";
 import { allowlist } from "@/db/schema";
+import { revokeAccess } from "@/lib/connector/grants";
 
 export type Role = "admin" | "editor" | "viewer";
 
@@ -107,9 +108,8 @@ export async function removeEntry(db: DB, email: string): Promise<void> {
     if ((await getRole(db, target)) !== null) throw lastAdminError();
     return;
   }
-  await db.execute(sql`
-    delete from session where user_id in (select id from "user" where lower(email) = ${target})
-  `);
+  // A second statement: the allowlist check on every request covers the moment between the two.
+  await revokeAccess(db, { email: target }, { sessions: true });
 }
 
 export async function seedAdmin(db: DB): Promise<void> {
