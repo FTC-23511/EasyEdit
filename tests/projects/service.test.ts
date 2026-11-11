@@ -1,3 +1,4 @@
+import type { PGlite } from "@electric-sql/pglite";
 import { sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { rowsOf, type DB } from "@/db";
@@ -292,6 +293,41 @@ describe("projects service", () => {
     const since0 = await getOpsSince(db, id, 0);
     expect(since0!.version).toBe(1);
     expect(since0!.entries.map((e) => e.version)).toEqual([1]);
+  });
+
+  it("getOpsSince never returns entries newer than the version it reports", async () => {
+    const db = await makeTestDb();
+    const id = await seedTwoClips(db);
+    // Pass-through spy on the real client: right after getOpsSince's first statement (the version read)
+    // finishes, another writer commits version 2 before getOpsSince's next statement runs.
+    const client = (db as unknown as { $client: PGlite }).$client;
+    const query = client.query.bind(client);
+    let interleaved = false;
+    vi.spyOn(client, "query").mockImplementation((async (...args: Parameters<PGlite["query"]>) => {
+      const result = await query(...args);
+      if (!interleaved) {
+        interleaved = true;
+        const write = await applyProjectOps(db, {
+          projectId: id,
+          baseVersion: 1,
+          actor: "u2",
+          ops: [{ op: "move_clip", clipId: "c2", start: 200 }],
+        });
+        expect(write).toMatchObject({ ok: true, version: 2 });
+      }
+      return result;
+    }) as PGlite["query"]);
+
+    const polled = await getOpsSince(db, id, 0);
+    vi.restoreAllMocks();
+
+    expect(interleaved).toBe(true);
+    expect(polled!.version).toBe(1);
+    expect(polled!.entries.map((e) => e.version)).toEqual([1]);
+    // The next poll from the reported version picks up version 2 exactly once.
+    const next = await getOpsSince(db, id, polled!.version);
+    expect(next!.version).toBe(2);
+    expect(next!.entries.map((e) => e.version)).toEqual([2]);
   });
 
   it("getOpsSince returns only the entries after the given version, in order", async () => {

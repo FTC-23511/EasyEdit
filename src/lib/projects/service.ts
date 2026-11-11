@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { rowsOf, type DB } from "@/db";
 import { projectOps, projects } from "@/db/schema";
@@ -206,7 +206,8 @@ export async function getOpsSince(
   const entries = await db
     .select({ version: projectOps.version, ops: projectOps.ops, actor: projectOps.actor })
     .from(projectOps)
-    .where(and(eq(projectOps.projectId, projectId), gt(projectOps.version, since)))
+    // Bounded by the version read above, so a write that lands in between is left for the next poll.
+    .where(and(eq(projectOps.projectId, projectId), gt(projectOps.version, since), lte(projectOps.version, version)))
     .orderBy(asc(projectOps.version));
   return { version, entries };
 }
