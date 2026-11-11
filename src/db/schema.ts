@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, integer, jsonb, pgTable, serial, text, timestamp, unique, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, index, integer, jsonb, pgTable, serial, text, timestamp, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import type { FormatId, Op, TimelineDoc } from "@/lib/timeline";
 
 export * from "./auth-schema";
@@ -51,5 +51,6 @@ export const projectOps = pgTable(
   (t) => [
     unique("project_ops_project_id_version_unique").on(t.projectId, t.version),
     uniqueIndex("project_ops_project_id_request_id_unique").on(t.projectId, t.requestId),
+    index("project_ops_actor_created_at_idx").on(t.actor, t.createdAt),
   ],
 );

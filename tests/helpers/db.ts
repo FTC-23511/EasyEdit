@@ -29,3 +29,10 @@ export async function makeTestDb(): Promise<DB> {
   });
   return drizzle(client, { schema });
 }
+
+// For a whole test file (called from beforeAll). The caller closes it.
+export async function makeSuiteDb(): Promise<{ db: DB; close(): Promise<void> }> {
+  template ??= migratedTemplate();
+  const client = (await (await template).clone()) as PGlite;
+  return { db: drizzle(client, { schema }), close: () => client.close() };
+}

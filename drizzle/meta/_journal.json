@@ -36,6 +36,13 @@
       "when": 1794391478190,
       "tag": "0004_op_request_id",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794434412287,
+      "tag": "0005_connector",
+      "breakpoints": true
     }
   ]
 }

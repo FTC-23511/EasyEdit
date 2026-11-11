@@ -48,4 +48,15 @@ describe("migrations", () => {
     await db.execute(sql`insert into allowlist (email, role) values ('kid@gmail.com', 'viewer')`);
     expect(rowsOf(await db.execute(sql`select email from allowlist`))).toEqual([{ email: "kid@gmail.com" }]);
   });
+
+  it("has the tables the connector's sign-in needs, and the index the write budget reads", async () => {
+    const db = await makeTestDb();
+    const tables = rowsOf<{ table_name: string }>(await db.execute(sql`select table_name from information_schema.tables where table_schema = 'public'`)).map((r) => r.table_name);
+    expect(tables).toEqual(expect.arrayContaining([
+      "jwks", "oauth_client", "oauth_resource", "oauth_client_resource", "oauth_refresh_token",
+      "oauth_access_token", "oauth_consent", "oauth_client_assertion", "rate_limit",
+    ]));
+    const indexes = rowsOf<{ indexname: string }>(await db.execute(sql`select indexname from pg_indexes where tablename = 'project_ops'`)).map((r) => r.indexname);
+    expect(indexes).toContain("project_ops_actor_created_at_idx");
+  });
 });

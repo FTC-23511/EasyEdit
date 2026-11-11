@@ -1,13 +1,13 @@
+import { cimd } from "@better-auth/cimd";
+import { fetchClientMetadataResource } from "@better-auth/cimd/node";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import { mcp } from "@better-auth/mcp";
 import { betterAuth } from "better-auth";
+import { jwt } from "better-auth/plugins";
 import { getDb } from "@/db";
 import { makeSessionCreateBefore, makeUserCreateBefore } from "@/lib/auth-hooks";
-
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is not set. Add it to .env.local (see .env.example).`);
-  return value;
-}
+import { DYNAMIC_REGISTRATION, mcpResourceUrl } from "@/lib/connector/config";
+import { requiredEnv } from "@/lib/env";
 
 const DAY_SECONDS = 24 * 60 * 60;
 // A session lasts this long after its last renewal, so people who keep coming back stay signed in.
@@ -40,6 +40,20 @@ function createAuth() {
       user: { create: { before: makeUserCreateBefore(db) } },
       session: { create: { before: makeSessionCreateBefore(db) } },
     },
+    plugins: [
+      // Signs the connector's access tokens. Session responses carry no token header.
+      jwt({ disableSettingJwtHeader: true }),
+      mcp({
+        resource: mcpResourceUrl(),
+        loginPage: "/login",
+        consentPage: "/consent",
+        allowDynamicClientRegistration: DYNAMIC_REGISTRATION,
+        allowUnauthenticatedClientRegistration: DYNAMIC_REGISTRATION,
+      }),
+      cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
+    ],
+    // Counted in the database: an in-memory count would reset with every new server instance.
+    rateLimit: { storage: "database" },
   });
 }
 
