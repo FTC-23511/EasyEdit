@@ -29,10 +29,23 @@ async function selfRegisteredClients(db: DB): Promise<number> {
   return row.n;
 }
 
-// Runs before every /api/auth request and acts only on registration. The count and the insert are separate statements,
-// so the cap can be passed by a few rows when registrations arrive together.
+// The requested prompt without "none", plus "consent": the member always sees the consent page.
+function promptWithConsent(prompt: unknown): string {
+  const values = [prompt].flat().filter((v) => typeof v === "string").flatMap((v) => v.split(" "));
+  return [...new Set([...values.filter((v) => v !== "" && v !== "none"), "consent"])].join(" ");
+}
+
+// Runs before every /api/auth request and acts only on authorization and registration. On registration, the count
+// and the insert are separate statements, so the cap can be passed by a few rows when registrations arrive together.
 export function connectorBeforeHook(db: DB): AuthMiddleware {
   return createAuthMiddleware(async (ctx) => {
+    // Matched on the address the browser asked for, not on ctx.path. After the member decides, the consent endpoint
+    // re-enters authorization from its own address, and asking again there would never end. Authorization reads a
+    // form post from its body and anything else from its query.
+    if (ctx.request !== undefined && new URL(ctx.request.url).pathname.endsWith("/oauth2/authorize")) {
+      if (ctx.method === "POST") return { context: { body: { ...ctx.body, prompt: promptWithConsent(ctx.body?.prompt) } } };
+      return { context: { query: { ...ctx.query, prompt: promptWithConsent(ctx.query?.prompt) } } };
+    }
     if (ctx.path !== "/oauth2/register") return;
     const uris: unknown = ctx.body?.redirect_uris;
     const onlyClaude = Array.isArray(uris) && uris.length > 0 && uris.every((uri) => typeof uri === "string" && isClaudeRedirect(uri));

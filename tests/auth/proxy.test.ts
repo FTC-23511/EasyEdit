@@ -7,7 +7,7 @@ const matches = (url: string) => unstable_doesMiddlewareMatch({ config, url });
 
 describe("proxy", () => {
   it("runs on app pages and app API routes", () => {
-    for (const url of ["/", "/dashboard", "/admin", "/editor/abc", "/api/projects", "/api/projects/abc/ops", "/loginx"]) {
+    for (const url of ["/", "/dashboard", "/admin", "/editor/abc", "/api/projects", "/api/projects/abc/ops", "/loginx", "/consent"]) {
       expect(matches(url), url).toBe(true);
     }
   });
@@ -20,6 +20,7 @@ describe("proxy", () => {
       "/api/mcp",
       "/api/mcp/sse",
       "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-protected-resource/api/mcp",
       "/_next/static/chunks/main.js",
       "/_next/image",
       "/favicon.ico",
