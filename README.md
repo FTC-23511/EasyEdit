@@ -37,7 +37,7 @@ pnpm install
 4. Fill in the app name (`EasyEdit`) and your email for support. Click **Next**.
 5. For Audience, choose **External**. Click **Next**.
 6. Enter your email as the contact, agree to the policy, and click **Create**.
-7. While the app is in **Testing** mode, only listed test users can sign in. Open **Audience**, find **Test users**, click **Add users**, and add every Google account that will sign in (including `admin@seattlesolvers.com`). Click **Save**.
+7. This app only asks Google for name, email and profile, so teammates should be able to sign in without being listed anywhere in Google Cloud. This has not been confirmed with a real sign-in yet (see the first-run checklist). If Google blocks someone anyway, open **Audience**, find **Test users**, click **Add users**, add their Google account, and click **Save**. Each new person you add on the Admin page may need the same treatment.
 8. Open **Clients** (or **APIs & Services**, then **Credentials**) and click **Create client** (or **Create credentials**, then **OAuth client ID**).
 9. For Application type, choose **Web application**. Name it `EasyEdit web`.
 10. Under **Authorized redirect URIs**, click **Add URI** and enter exactly:
@@ -113,6 +113,7 @@ These checks need a real Google client and a real database, so work through them
 **Sign-in**
 
 - [ ] Signing in as `admin@seattlesolvers.com` takes you to `/dashboard`.
+- [ ] A teammate with a personal Google account who is on the allowlist can sign in without being added as a Google test user. If Google blocks them, add them as a test user and note that in this README.
 - [ ] Signing in with a Google account that is not on the allowlist sends you back to `/login` with the message that the account isn't on the allowlist.
 
 **Admin page** (signed in as the admin)
@@ -213,6 +214,6 @@ Every error has this shape:
 ## If something goes wrong
 
 - **Google says `redirect_uri_mismatch`.** The redirect URI in Google Cloud does not exactly match `<BETTER_AUTH_URL>/api/auth/callback/google`. Fix it in step 1.
-- **Google says the app is blocked or access denied.** Add that account as a test user (step 1, item 7).
+- **Google blocks an account that is on the allowlist.** Add that account under **Audience**, then **Test users** in Google Cloud (step 1, item 7), and tell the team in this README if it turns out to be needed.
 - **"DATABASE_URL is not set" or similar.** `.env.local` is missing or has an empty value.
 - **You land on `/login` with the allowlist message.** Ask an admin to add your email on the Admin page.
