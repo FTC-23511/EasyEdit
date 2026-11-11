@@ -1,5 +1,6 @@
 "use client";
 
+import { unstable_rethrow } from "next/navigation";
 import { useRef, useState, useTransition } from "react";
 import { addMemberAction, removeMemberAction, setRoleAction } from "./actions";
 
@@ -15,7 +16,8 @@ function useAction(action: (formData: FormData) => Promise<ActionResult>) {
       let message: string | null;
       try {
         message = (await action(formData)).error ?? null;
-      } catch {
+      } catch (e) {
+        unstable_rethrow(e);
         message = "Something went wrong. Try again.";
       }
       setError(message);
