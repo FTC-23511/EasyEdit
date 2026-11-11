@@ -218,6 +218,7 @@ Some rules:
 - A Google account whose email Google has not verified is always rejected.
 - There must always be at least one admin. The last admin cannot be demoted or removed.
 - Removing someone signs them out right away. They are sent to `/login` on their next request.
+- You stay signed in for 30 days after your last visit. Each visit starts the 30 days again.
 
 ## Project formats
 

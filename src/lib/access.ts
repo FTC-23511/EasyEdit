@@ -11,7 +11,9 @@ import { getAuth } from "@/lib/auth";
 export { meetsRole, resolveCurrentUser, type CurrentUser } from "@/lib/access-rules";
 
 async function currentUserFor(requestHeaders: Headers): Promise<CurrentUser | null> {
-  const session = await getAuth().api.getSession({ headers: requestHeaders });
+  // Read only. A renewal here would move the expiry in the database, but its new cookie has no response to travel
+  // on, so the browser's cookie would still run out on the old date. KeepSignedIn renews both from the browser.
+  const session = await getAuth().api.getSession({ headers: requestHeaders, query: { disableRefresh: true } });
   return resolveCurrentUser(getDb(), session?.user ?? null);
 }
 

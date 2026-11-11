@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { KeepSignedIn } from "@/components/keep-signed-in";
 import { requireUser } from "@/lib/access";
 import { SignOutButton } from "./sign-out-button";
 
@@ -22,6 +23,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
           <SignOutButton />
         </div>
       </header>
+      <KeepSignedIn />
       {children}
     </>
   );

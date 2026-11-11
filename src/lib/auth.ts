@@ -9,6 +9,12 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+const DAY_SECONDS = 24 * 60 * 60;
+// A session lasts this long after its last renewal, so people who keep coming back stay signed in.
+const SESSION_SECONDS = 30 * DAY_SECONDS;
+// A session is renewed at most once a day.
+const SESSION_RENEW_AFTER_SECONDS = DAY_SECONDS;
+
 function createAuth() {
   const db = getDb();
   return betterAuth({
@@ -25,7 +31,11 @@ function createAuth() {
       },
     },
     // Every request must reach the database so a removed user is locked out on their next request.
-    session: { cookieCache: { enabled: false } },
+    session: {
+      cookieCache: { enabled: false },
+      expiresIn: SESSION_SECONDS,
+      updateAge: SESSION_RENEW_AFTER_SECONDS,
+    },
     databaseHooks: {
       user: { create: { before: makeUserCreateBefore(db) } },
       session: { create: { before: makeSessionCreateBefore(db) } },

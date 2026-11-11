@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { EditorShell } from "@/components/editor/editor-shell";
+import { KeepSignedIn } from "@/components/keep-signed-in";
 import { getDb } from "@/db";
 import { meetsRole, requireUser } from "@/lib/access";
 import { actorFrom } from "@/lib/actor";
@@ -18,16 +19,19 @@ export default async function EditorPage({ params }: PageProps<"/editor/[id]">) 
   if (!project) notFound();
 
   return (
-    <EditorShell
-      key={project.id}
-      initial={{
-        projectId: project.id,
-        name: project.name,
-        doc: project.doc,
-        version: project.version,
-        me: { id: user.id, name: user.name },
-        canEdit: meetsRole(user.role, "editor"),
-      }}
-    />
+    <>
+      <KeepSignedIn />
+      <EditorShell
+        key={project.id}
+        initial={{
+          projectId: project.id,
+          name: project.name,
+          doc: project.doc,
+          version: project.version,
+          me: { id: user.id, name: user.name },
+          canEdit: meetsRole(user.role, "editor"),
+        }}
+      />
+    </>
   );
 }

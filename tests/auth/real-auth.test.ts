@@ -120,3 +120,70 @@ describe("the real auth instance from src/lib/auth.ts", () => {
     expect(((await requireUserApi(apiRequest(cookie), "viewer")) as Response).status).toBe(401);
   });
 });
+
+const DAY = 24 * 60 * 60 * 1000;
+const SESSION_DAYS = 30;
+
+// Rewrites the only session row as if it had last been renewed that many days ago.
+async function lastRenewed(daysAgo: number): Promise<Date> {
+  const expiresAt = new Date(Math.round((Date.now() + (SESSION_DAYS - daysAgo) * DAY) / 1000) * 1000);
+  await testDb.update(sessionTable).set({ expiresAt });
+  return expiresAt;
+}
+
+const expiry = async () => (await testDb.select().from(sessionTable))[0].expiresAt;
+
+// What the browser sends from a signed-in page: a plain GET to the sign-in endpoint.
+const browserCheck = (auth: Awaited<ReturnType<typeof realAuth>>["auth"], cookie: string) =>
+  auth.handler(new Request(`${BASE_URL}/api/auth/get-session`, { headers: { cookie } }));
+
+describe("staying signed in", () => {
+  it("a page or API read never moves the session's expiry, so the browser's cookie cannot fall behind it", async () => {
+    const { ctx } = await realAuth();
+    const { requireUserApi } = await import("@/lib/access");
+    const { user, cookie } = await signIn(ctx, SEED_ADMIN_EMAIL, "g-10");
+    const before = await lastRenewed(2);
+
+    expect(await requireUserApi(apiRequest(cookie), "viewer")).toMatchObject({ id: user.id });
+    expect((await expiry()).getTime()).toBe(before.getTime());
+  });
+
+  it("the browser's check renews a session last renewed over a day ago, in the database and in the cookie", async () => {
+    const { auth, ctx } = await realAuth();
+    const { requireUserApi } = await import("@/lib/access");
+    const { user, cookie } = await signIn(ctx, SEED_ADMIN_EMAIL, "g-11");
+    await lastRenewed(2);
+
+    // A page was read first, as on every real page load. That read used to renew the row and drop the cookie.
+    await requireUserApi(apiRequest(cookie), "viewer");
+    const res = await browserCheck(auth, cookie);
+
+    expect(res.status).toBe(200);
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain(`${ctx.authCookies.sessionToken.name}=`);
+    expect(setCookie).toContain(`Max-Age=${SESSION_DAYS * 24 * 60 * 60}`);
+    expect(Math.abs((await expiry()).getTime() - (Date.now() + SESSION_DAYS * DAY))).toBeLessThan(60_000);
+    // The same cookie value still signs the person in.
+    expect(await requireUserApi(apiRequest(cookie), "viewer")).toMatchObject({ id: user.id });
+  });
+
+  it("a session renewed less than a day ago is left as it is", async () => {
+    const { auth, ctx } = await realAuth();
+    const { cookie } = await signIn(ctx, SEED_ADMIN_EMAIL, "g-12");
+    const before = await lastRenewed(0.5);
+
+    const res = await browserCheck(auth, cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect((await expiry()).getTime()).toBe(before.getTime());
+  });
+
+  it("the browser's check answers with no session and no cookie for a person who is not signed in", async () => {
+    const { auth } = await realAuth();
+    const res = await auth.handler(new Request(`${BASE_URL}/api/auth/get-session`));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toBeNull();
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+});
