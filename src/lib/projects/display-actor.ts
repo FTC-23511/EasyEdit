@@ -1,6 +1,10 @@
 const CLAUDE_PREFIX = "claude:";
 
 // An actor is a user id, or `claude:<userId>` when Claude made the change for that user.
+export function claudeActorId(userId: string): string {
+  return `${CLAUDE_PREFIX}${userId}`;
+}
+
 export function actorUserId(actor: string): string {
   return actor.startsWith(CLAUDE_PREFIX) ? actor.slice(CLAUDE_PREFIX.length) : actor;
 }

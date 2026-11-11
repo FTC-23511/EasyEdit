@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { makeSignature } from "better-auth/crypto";
 import { eq } from "drizzle-orm";
 import { vi } from "vitest";
@@ -46,6 +48,7 @@ export async function startConnectorApp() {
   async function send(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
     if (pathname.startsWith("/api/auth/")) return (await realAuth()).auth.handler(request);
+    if (pathname === "/api/mcp") return (await import("@/app/api/mcp/route")).POST(request);
     if (pathname === "/.well-known/oauth-authorization-server") return (await import("@/app/.well-known/oauth-authorization-server/route")).GET(request);
     if (pathname === "/.well-known/oauth-authorization-server/api/auth") return (await import("@/app/.well-known/oauth-authorization-server/api/auth/route")).GET(request);
     if (pathname === "/.well-known/oauth-protected-resource") return (await import("@/app/.well-known/oauth-protected-resource/route")).GET(request);
@@ -144,8 +147,40 @@ export async function startConnectorApp() {
     return { userId, clientId, cookie, accessToken: tokens.access_token, refreshToken: tokens.refresh_token };
   }
 
+  // One raw protocol request, for checks on status codes and headers.
+  function rpc(token: string | null, method: string, params: object = {}, headers: Record<string, string> = {}) {
+    return send(new Request(MCP_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18",
+        ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    }));
+  }
+
+  // The official client, talking to the real route.
+  async function mcpClient(token: string) {
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(MCP_URL), {
+      fetch: inProcessFetch, requestInit: { headers: { authorization: `Bearer ${token}` } },
+    }));
+    return client;
+  }
+
+  async function callTool(token: string, name: string, args: Record<string, unknown> = {}) {
+    const client = await mcpClient(token);
+    try {
+      const result = await client.callTool({ name, arguments: args });
+      const text = (result.content as { type: string; text?: string }[]).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      return { text, isError: result.isError === true };
+    } finally {
+      await client.close();
+    }
+  }
+
   return {
-    db, send, fetch: inProcessFetch, signIn, register, authorize, decide, token, connect, pkce,
+    db, send, fetch: inProcessFetch, signIn, register, authorize, decide, token, connect, pkce, rpc, mcpClient, callTool,
     // As a new serverless instance would start: nothing kept in memory.
     forgetServerInstance: () => { delete globalForAuth.__easyEditAuth; },
     async stop() {
