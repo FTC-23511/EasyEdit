@@ -28,7 +28,7 @@ describe("requireUserApi", () => {
     const { requireUserApi } = await import("@/lib/access");
     const res = (await requireUserApi(req(), "viewer")) as Response;
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ code: "UNAUTHENTICATED" });
+    expect(await res.json()).toEqual({ code: "UNAUTHENTICATED", message: "Sign in to continue." });
   });
 
   it("a session whose email is not on the allowlist returns 401 UNAUTHENTICATED", async () => {
@@ -36,7 +36,7 @@ describe("requireUserApi", () => {
     const { requireUserApi } = await import("@/lib/access");
     const res = (await requireUserApi(req(), "viewer")) as Response;
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ code: "UNAUTHENTICATED" });
+    expect(await res.json()).toEqual({ code: "UNAUTHENTICATED", message: "Sign in to continue." });
   });
 
   it("a viewer asking for editor returns 403 FORBIDDEN", async () => {
@@ -44,7 +44,7 @@ describe("requireUserApi", () => {
     const { requireUserApi } = await import("@/lib/access");
     const res = (await requireUserApi(req(), "editor")) as Response;
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ code: "FORBIDDEN" });
+    expect(await res.json()).toEqual({ code: "FORBIDDEN", message: "Your role doesn't allow this." });
   });
 
   it("an editor asking for editor returns the user with role editor", async () => {

@@ -37,7 +37,7 @@ describe("proxy", () => {
   it("answers an API request without a session cookie with 401 UNAUTHENTICATED", async () => {
     const res = proxy(new NextRequest("http://localhost:3000/api/projects"));
     expect(res.status).toBe(401);
-    await expect(res.json()).resolves.toEqual({ code: "UNAUTHENTICATED" });
+    await expect(res.json()).resolves.toEqual({ code: "UNAUTHENTICATED", message: "Sign in to continue." });
   });
 
   it("lets a request with a session cookie through to the real guard", () => {

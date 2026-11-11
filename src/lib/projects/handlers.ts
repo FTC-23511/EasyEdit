@@ -3,7 +3,8 @@ import type { DB } from "@/db";
 import type { CurrentUser } from "@/lib/access-rules";
 import type { Role } from "@/lib/allowlist/service";
 import { applyProjectOps, createProject, getOpsSince, getProject, listProjects } from "@/lib/projects/service";
-import { FORMAT_PRESETS, type FormatId, type OpInput } from "@/lib/timeline";
+import { createProjectInput } from "@/lib/projects/schemas";
+import type { OpInput } from "@/lib/timeline";
 
 export type HandlerDeps = {
   db: () => DB;
@@ -11,13 +12,6 @@ export type HandlerDeps = {
 };
 
 export type ProjectRouteContext = { params: Promise<{ id: string }> };
-
-const FORMAT_IDS = Object.keys(FORMAT_PRESETS) as [FormatId, ...FormatId[]];
-
-const createBody = z.object({
-  name: z.string().trim().min(1).max(100),
-  format: z.enum(FORMAT_IDS),
-});
 
 const opsBody = z.object({
   baseVersion: z.number().int().min(0),
@@ -63,7 +57,7 @@ export function makeProjectHandlers(deps: HandlerDeps) {
       if (user instanceof Response) return user;
       const json = await readJson(req);
       if (!json.ok) return invalid("Body must be valid JSON");
-      const parsed = createBody.safeParse(json.value);
+      const parsed = createProjectInput.safeParse(json.value);
       if (!parsed.success) return invalid(describeIssue(parsed.error));
       const { id } = await createProject(deps.db(), { ...parsed.data, actor: user.id });
       return Response.json({ id }, { status: 201 });
