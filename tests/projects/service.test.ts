@@ -117,6 +117,22 @@ describe("projects service", () => {
     });
   });
 
+  it("set_format updates the project's stored format with the doc", async () => {
+    const db = await makeTestDb();
+    const { id } = await createProject(db, { name: "Qual recap", format: "short_9x16", actor: "u1" });
+    const r = await applyProjectOps(db, {
+      projectId: id,
+      baseVersion: 0,
+      actor: "u1",
+      ops: [{ op: "set_format", format: "long_16x9" }],
+    });
+    expect(r).toMatchObject({ ok: true, version: 1 });
+    const project = await getProject(db, id);
+    expect(project!.doc.format).toBe("long_16x9");
+    expect(project!.format).toBe("long_16x9");
+    expect((await listProjects(db)).find((p) => p.id === id)!.format).toBe("long_16x9");
+  });
+
   it("invalid op leaves doc and version unchanged", async () => {
     const db = await makeTestDb();
     const { id } = await createProject(db, { name: "Qual recap", format: "short_9x16", actor: "u1" });

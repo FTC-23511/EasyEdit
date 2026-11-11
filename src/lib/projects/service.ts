@@ -116,8 +116,9 @@ const rejected = (error: OpError, code: string = error.code): ApplyResult => ({
   message: error.message,
 });
 
-// Updates the doc only if its version is still the one read, and logs the ops from that same update,
-// so the doc and the op log can never disagree. Returns the new version, or null if another writer won.
+// Updates the doc, and the format column that mirrors it, only if its version is still the one read, and logs
+// the ops from that same update, so the doc and the op log can never disagree. Returns the new version, or null
+// if another writer won.
 async function writeIfUnchanged(
   db: DB,
   input: { projectId: string; readVersion: number; doc: TimelineDoc; ops: Op[]; actor: string },
@@ -125,7 +126,7 @@ async function writeIfUnchanged(
   const result = await db.execute(sql`
     with upd as (
       update projects
-      set doc = ${JSON.stringify(input.doc)}::jsonb, version = version + 1,
+      set doc = ${JSON.stringify(input.doc)}::jsonb, format = ${input.doc.format}::text, version = version + 1,
           updated_by = ${input.actor}::text, updated_at = now()
       where id = ${input.projectId}::text and version = ${input.readVersion}::integer
       returning version
