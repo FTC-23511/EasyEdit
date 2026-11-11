@@ -5,14 +5,22 @@ import { addMemberAction, removeMemberAction, setRoleAction } from "./actions";
 
 type ActionResult = { error?: string };
 
+type Outcome = { onSuccess?: () => void; onFailure?: () => void };
+
 function useAction(action: (formData: FormData) => Promise<ActionResult>) {
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  function submit(formData: FormData, onSuccess?: () => void) {
+  function submit(formData: FormData, { onSuccess, onFailure }: Outcome = {}) {
     startTransition(async () => {
-      const result = await action(formData);
-      setError(result.error ?? null);
-      if (!result.error) onSuccess?.();
+      let message: string | null;
+      try {
+        message = (await action(formData)).error ?? null;
+      } catch {
+        message = "Something went wrong. Try again.";
+      }
+      setError(message);
+      if (message === null) onSuccess?.();
+      else onFailure?.();
     });
   }
   return { error, pending, submit };
@@ -31,17 +39,24 @@ const ROLE_OPTIONS = ["admin", "editor", "viewer"] as const;
 
 export function RoleSelect({ email, role }: { email: string; role: string }) {
   const { error, pending, submit } = useAction(setRoleAction);
+  const [value, setValue] = useState(role);
+  const [syncedRole, setSyncedRole] = useState(role);
+  if (role !== syncedRole) {
+    setSyncedRole(role);
+    setValue(role);
+  }
   return (
     <div className="flex flex-col gap-1">
       <select
         aria-label={`Role for ${email}`}
-        defaultValue={role}
+        value={value}
         disabled={pending}
         onChange={(e) => {
           const formData = new FormData();
           formData.set("email", email);
           formData.set("role", e.target.value);
-          submit(formData);
+          setValue(e.target.value);
+          submit(formData, { onFailure: () => setValue(role) });
         }}
         className="rounded-md border border-black/15 bg-background px-2 py-1 text-sm disabled:opacity-60 dark:border-white/20"
       >
@@ -85,7 +100,7 @@ export function AddMemberForm() {
       ref={formRef}
       onSubmit={(e) => {
         e.preventDefault();
-        submit(new FormData(e.currentTarget), () => formRef.current?.reset());
+        submit(new FormData(e.currentTarget), { onSuccess: () => formRef.current?.reset() });
       }}
       className="flex flex-col gap-3"
     >
