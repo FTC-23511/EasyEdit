@@ -9,10 +9,18 @@ This README gets the app running on your own computer. You will set up three thi
 - Sign in with Google. Anyone not on the allowlist is turned away.
 - An Admin page where admins add people, change their role, and remove them.
 - A dashboard where editors create projects in any of five video formats, and rename, duplicate and delete them. A deleted project is hidden and not shown again.
-- A project page that shows a text summary of the project.
+- The editor, which opens a project in the whole window: an add panel on the left, the preview in the middle, the details on the right and the timeline along the bottom. It is always dark, and it asks the Dark Reader browser extension to leave it alone. In it you can:
+  - add text clips from three presets (Title, Subtitle, Lower third), and move, trim, split, delete, ripple-delete, copy and paste clips
+  - add, rename, lock, hide, mute, reorder and remove tracks
+  - play the project in the preview, with frame steps, J, K and L, and safe-zone guides for each format
+  - undo and redo your own changes, and undo any change listed under Activity, including a teammate's
+- Every change is saved as you make it. Other people's changes show up within about two seconds while you are working, and the top bar says who is editing.
+- Viewers get the same editor, read-only: they can play and look, but not change anything.
 - A project API (see [The project API](#the-project-api)).
 
-What's next: uploading video, the real timeline editor, exports and posting.
+The editor needs a window at least 1024 px wide. Changes made while offline or signed out wait in the open tab and are sent once you are back. They are not kept if the tab is closed or reloaded first, and the browser asks before that happens. The browser's Back button does not ask, so use **Projects** to leave while changes are waiting.
+
+What's next: uploading video, images and audio (media clips show only as placeholders for now), thumbnails and waveforms on the timeline, captions, text animation and effects, a brand kit and templates, exports and the render station, voiceover, and posting.
 
 ## Before you start
 
@@ -133,8 +141,8 @@ These checks need a real Google client and a real database, so work through them
 
 **Projects** (signed in as admin)
 
-- [ ] On the dashboard, create a project and open it. A text summary of an empty project shows.
-- [ ] Add a clip through the API and refresh the project page. The clip shows up. To try it, copy the project id from the page address (`/editor/<id>`), copy the value of the `Cookie` request header from your browser's developer tools (Network tab, click any request to the app, then look under **Request Headers**), and run:
+- [ ] On the dashboard, create a project and open it. The editor opens with an empty timeline.
+- [ ] Add a clip through the API while the editor is open. Within a few seconds the clip shows up on Text 1, without a reload. To try it, copy the project id from the page address (`/editor/<id>`), copy the value of the `Cookie` request header from your browser's developer tools (Network tab, click any request to the app, then look under **Request Headers**), and run:
 
     ```bash
     curl -X POST http://localhost:3000/api/projects/<id>/ops \
@@ -146,6 +154,26 @@ These checks need a real Google client and a real database, so work through them
     The answer starts with `{"version":1`.
 
     The cookie is a secret, like `.env.local`: anyone who has it is signed in as you. Do not paste it into chats, issues or commits.
+
+## What to click to check the editor
+
+The editor cannot be opened without a Google sign-in, so the tests cannot click through it. Do this once after a change to the editor, signed in on your own computer. It takes about ten minutes. Use an editor account, and a second account in another browser profile for lines 9, 10 and 12.
+
+1. Open a project from the dashboard. The editor fills the window, dark, with no site header. The top bar shows "Projects", the project's name and "Saved".
+2. In the left panel click **Title**. A clip appears on Text 1 at the playhead and the preview shows "Your title". The status flips to "Saving…" and back to "Saved".
+3. With the clip selected, type in **Text** in the inspector. The preview follows as you type. Change **Size** and **Color**. Click away: each change is saved once.
+4. Drag the clip to the right. It snaps to whole seconds and a guide line shows. Drag its right edge to make it shorter.
+5. Put the playhead in the middle of the clip and press `S`: it becomes two clips. Select the second and press `Delete`. Press `Cmd/Ctrl+Z`: it comes back. Press `Shift+Cmd/Ctrl+Z`: it goes again.
+6. Click **Subtitle** with the playhead over the first clip. It lands on a new track, "Text 2", in the row just above Text 1: a new track goes just in front of the other tracks of its kind. Open that track's options: **Move down**, then **Move up**. Lock it, then hide it: its text leaves the preview.
+7. Select a clip, press `Cmd/Ctrl+C`, move the playhead, press `Cmd/Ctrl+V`. A copy appears at the playhead and is selected.
+8. Press `Space` to play and `K` to stop. Click a button such as **Safe zones**, then press `Space`: it plays, and the button is not pressed again. Try `L` twice (2×), `J`, the arrow keys, `Home` and `End`. Turn **Safe zones** off and on. With nothing selected, switch **Format** to Long 16:9: the canvas changes shape.
+9. In the second profile open the same project and move a clip. Within about two seconds the first window shows the move and "<name> is editing…". Open **Activity** in the first window: both people's changes are listed. Click **Undo this change** on the other person's move: it moves back in both windows.
+10. Change a clip's text in the first window, then change the same text in the second. In the first window press `Cmd/Ctrl+Z`. It says "Can't undo. This was changed afterwards." and the second person's text stays.
+11. In the browser's developer tools set the network to Offline and move a clip. The status reads "Offline. Changes will save when you reconnect." Click **Projects**: the browser asks before leaving; stay on the page. Go back online: it reads "Saved". Reload: the move is still there.
+12. On the Admin page make the second account a viewer and reload its editor. It shows "View only", every edit control is greyed out, clips cannot be dragged, and Play still works.
+13. Sign out in another tab, then move a clip in the editor. It says "You're signed out. Sign in again to save your changes." and the status reads "Signed out". Click **Sign in**: it opens in a new tab. Sign in there and come back to the editor: the status returns to "Saved" and the move is kept.
+14. Press `?`. The list of shortcuts opens. Close it with `Escape`.
+15. Make the window narrower than 1024 px. The editor is replaced by "The editor needs a wider window."
 
 ## Deploy to Vercel
 
@@ -216,7 +244,7 @@ All routes need you to be signed in (they use the same cookie as the website). B
 | `PATCH /api/projects/:id` | editor and up | Rename a project: send `{ "name" }`. Answers `{ id, name }`. |
 | `DELETE /api/projects/:id` | editor and up | Delete a project. Answers `204`. |
 | `POST /api/projects/:id/duplicate` | editor and up | Make a copy of a project. Answers `201` with `{ "id" }` of the copy. |
-| `GET /api/projects/:id/ops?since=N` | viewer and up | Get the changes after version `N`: `{ version, entries, hasMore }`. Each entry is `{ version, ops, inverse, actor, requestId, createdAt }`. Add `limit` to set the page size (default 100, at most 500). A page holds fewer entries when they are large. When `hasMore` is true, ask again from the `version` in the answer. |
+| `GET /api/projects/:id/ops?since=N` | viewer and up | Get the changes after version `N`: `{ version, entries, hasMore }`. Each entry is `{ version, ops, inverse, actor, actorName, requestId, createdAt }`. Add `limit` to set the page size (default 100, at most 500). A page holds fewer entries when they are large. When `hasMore` is true, ask again from the `version` in the answer. |
 | `POST /api/projects/:id/ops` | editor and up | Apply changes: send `{ "baseVersion": N, "ops": [...] }` (1 to 500 ops). Answers `{ version, ops, inverse }`. |
 
 Edits are versioned. Send the version you last saw as `baseVersion`. Changes that do not clash with newer edits still apply. A `baseVersion` newer than the project is refused.

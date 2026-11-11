@@ -36,6 +36,7 @@ const CASES: [string, Op][] = [
   ["trim_clip end", { op: "trim_clip", clipId: "c3", edge: "end", to: 70 }],
   ["split_clip at speed 1.5", { op: "split_clip", clipId: "c1", at: 11, newClipId: "c5" }],
   ["update_clip", { op: "update_clip", clipId: "x1", patch: { text: "GO", style: { color: "#000" } } }],
+  ["move_track", { op: "move_track", trackId: "t1", index: 0 }],
   ["set_format", { op: "set_format", format: "long_16x9" }],
 ];
 

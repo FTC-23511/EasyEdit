@@ -10,6 +10,23 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --color-ed-bg: var(--ed-bg);
+  --color-ed-panel: var(--ed-panel);
+  --color-ed-raised: var(--ed-raised);
+  --color-ed-hover: var(--ed-hover);
+  --color-ed-line: var(--ed-line);
+  --color-ed-line-strong: var(--ed-line-strong);
+  --color-ed-text: var(--ed-text);
+  --color-ed-muted: var(--ed-muted);
+  --color-ed-faint: var(--ed-faint);
+  --color-ed-accent: var(--ed-accent);
+  --color-ed-accent-weak: var(--ed-accent-weak);
+  --color-ed-danger: var(--ed-danger);
+  --color-ed-warn: var(--ed-warn);
+  --color-ed-clip-video: var(--ed-clip-video);
+  --color-ed-clip-image: var(--ed-clip-image);
+  --color-ed-clip-text: var(--ed-clip-text);
+  --color-ed-clip-audio: var(--ed-clip-audio);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -17,6 +34,29 @@
     --background: #0a0a0a;
     --foreground: #ededed;
   }
+}
+
+/* The editor is always dark. Everything inside .editor uses these roles. */
+.editor {
+  color-scheme: dark;
+  --ed-bg: #0a0a0a;          /* the window and the area around the canvas (the app's dark background) */
+  --ed-panel: #141414;       /* panels, top bar, timeline */
+  --ed-raised: #1c1c1c;      /* inputs, menus, track headers */
+  --ed-hover: #262626;
+  --ed-line: #2a2a2a;        /* hairlines */
+  --ed-line-strong: #3d3d3d; /* borders of inputs, dividers between regions */
+  --ed-text: #ededed;        /* the app's dark foreground */
+  --ed-muted: #a3a3a3;       /* secondary text */
+  --ed-faint: #737373;       /* decoration and disabled marks only, never text a person must read */
+  --ed-accent: #6ea8ff;      /* selection, focus, the primary action */
+  --ed-accent-weak: rgb(110 168 255 / 0.18);
+  --ed-danger: #f26d6d;      /* errors, destructive actions, a drop that is not allowed */
+  --ed-warn: #e0b341;        /* offline */
+  /* PLACEHOLDER_FILL in src/lib/render/compositor.ts repeats the next two values, because a worker cannot read CSS variables. */
+  --ed-clip-video: #2c3d5c;
+  --ed-clip-image: #3b3160;
+  --ed-clip-text: #2d4a3e;
+  --ed-clip-audio: #4d3d2a;
 }
 
 body {

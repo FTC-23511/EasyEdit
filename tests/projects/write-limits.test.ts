@@ -38,6 +38,7 @@ const CASES: [string, OpInput][] = [
   ["update_track", { op: "update_track", trackId: "v1", patch: { name: "Main", muted: true } }],
   ["replace_track existing", { op: "replace_track", track: { id: "o1", kind: "overlay", name: "O", muted: false, hidden: false, locked: false, clips: [video("z", 0, 10)] }, index: 1 }],
   ["replace_track absent", { op: "replace_track", track: { id: "n2", kind: "overlay", name: "New", muted: false, hidden: false, locked: false, clips: [video("z", 0, 10)] }, index: 2 }],
+  ["move_track", { op: "move_track", trackId: "t1", index: 0 }],
   ["add_clip", { op: "add_clip", trackId: "v1", clip: video("c4", 90, 30) }],
   ["add_clip ripple", { op: "add_clip", trackId: "v1", clip: video("c4", 30, 15), ripple: true }],
   ["remove_clip", { op: "remove_clip", clipId: "c2" }],

@@ -3,6 +3,7 @@ import type { CurrentUser } from "@/lib/access-rules";
 import { makeOpsHandlers, makeProjectHandlers } from "@/lib/projects/handlers";
 import { applyProjectOps, createProject } from "@/lib/projects/service";
 import { DEFAULT_TRANSFORM, type OpInput } from "@/lib/timeline";
+import { user } from "@/db/schema";
 import { makeTestDb } from "../helpers/db";
 
 function userWith(role: CurrentUser["role"]): CurrentUser {
@@ -118,13 +119,26 @@ describe("ops routes", () => {
     const res = await ops.postOps(post(`http://x/api/projects/${id}/ops`, { baseVersion: 0, ops: [addClip] }), ctx(id));
     expect(await res.json()).toEqual({ version: 1, ops: [addClip], inverse: [{ op: "remove_clip", clipId: "c1" }] });
     const since = await (await ops.getSince(new Request(`http://x/api/projects/${id}/ops?since=0`), ctx(id))).json();
-    expect(since.entries[0]).toEqual({ version: 1, ops: [addClip], inverse: [{ op: "remove_clip", clipId: "c1" }], actor: "u1",
+    expect(since.entries[0]).toEqual({ version: 1, ops: [addClip], inverse: [{ op: "remove_clip", clipId: "c1" }], actor: "u1", actorName: "Someone",
       requestId: null, createdAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
     const stale = await ops.postOps(post(`http://x/api/projects/${id}/ops`, { baseVersion: 0, strict: true, ops: [{ op: "remove_clip", clipId: "c1" }] }), ctx(id));
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ code: "CONFLICT", currentVersion: 1 });
     const bad = await ops.postOps(post(`http://x/api/projects/${id}/ops`, { baseVersion: 1, strict: "yes", ops: [addClip] }), ctx(id));
     expect(bad.status).toBe(400);
+  });
+
+  it("GET ops names who made each change", async () => {
+    const { db, ops } = await setup("viewer");
+    await db.insert(user).values([{ id: "u1", name: "Ada Lovelace", email: "ada@gmail.com", emailVerified: true }]);
+    const editor = { userId: "u1", email: "u1@gmail.com", role: "editor" as const };
+    const { id } = await createProject(db, editor, { name: "P", format: "short_9x16" });
+    const retext = (text: string) => [{ op: "update_clip" as const, clipId: "c1", patch: { text } }];
+    await applyProjectOps(db, editor, { projectId: id, baseVersion: 0, ops: [addClip] });
+    await applyProjectOps(db, { ...editor, userId: "claude:u1" }, { projectId: id, baseVersion: 1, ops: retext("GO") });
+    await applyProjectOps(db, { ...editor, userId: "u9" }, { projectId: id, baseVersion: 2, ops: retext("GO!") });
+    const page = await (await ops.getSince(new Request(`http://x/api/projects/${id}/ops?since=0`), ctx(id))).json();
+    expect(page.entries.map((e: { actorName: string }) => e.actorName)).toEqual(["Ada Lovelace", "Claude (for Ada Lovelace)", "Someone"]);
   });
 
   it("POST ops takes a requestId: a repeat answers the same body, a malformed one is 400 INVALID", async () => {

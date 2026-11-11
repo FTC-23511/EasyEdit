@@ -51,6 +51,13 @@ const sharedOps = [
   // expect: the track's clip ids, in any order.
   z.object({ op: z.literal("remove_track"), trackId: id, expect: z.object({ clipIds: z.array(id) }).strict().optional() }),
   z.object({ op: z.literal("update_track"), trackId: id, patch: TrackPatch, expect: TrackPatch.strict().optional() }),
+  // The track ends at index (clamped to the last place). expect: the index it must be at now.
+  z.object({
+    op: z.literal("move_track"),
+    trackId: id,
+    index: z.number().int().min(0),
+    expect: z.object({ index: z.number().int() }).strict().optional(),
+  }),
   z.object({
     op: z.literal("replace_track"),
     track: Track,

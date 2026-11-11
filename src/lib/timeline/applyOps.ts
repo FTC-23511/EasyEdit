@@ -197,6 +197,18 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
         break;
       }
 
+      case "move_track": {
+        const { trackIndex } = findTrack(doc, op.trackId, opIndex, name);
+        if (op.expect && op.expect.index !== trackIndex) throw stale(`track "${op.trackId}"`);
+        const [moved] = doc.tracks.splice(trackIndex, 1);
+        const index = Math.min(op.index, doc.tracks.length);
+        doc.tracks.splice(index, 0, moved);
+        if (index !== trackIndex) {
+          groups.push([{ op: "move_track", trackId: op.trackId, index: trackIndex, expect: { index } }]);
+        }
+        break;
+      }
+
       case "replace_track": {
         const incoming = structuredClone(op.track);
         const existingIndex = doc.tracks.findIndex((t) => t.id === incoming.id);

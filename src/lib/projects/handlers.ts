@@ -4,6 +4,7 @@ import type { CurrentUser } from "@/lib/access-rules";
 import { actorFrom } from "@/lib/actor";
 import { apiRoute } from "@/lib/api-route";
 import { LIMITS } from "@/lib/limits";
+import { actorUserId, displayActor } from "@/lib/projects/display-actor";
 import {
   applyProjectOps,
   createProject,
@@ -15,6 +16,7 @@ import {
   listProjects,
   renameProject,
 } from "@/lib/projects/service";
+import { getUserNames } from "@/lib/projects/user-names";
 import type { ErrorBody } from "@/lib/service-error";
 import type { OpInput } from "@/lib/timeline";
 
@@ -150,7 +152,11 @@ export function makeOpsHandlers(deps: HandlerDeps) {
       if (limit && !limit.success) return invalid(`limit must be an integer from 1 to ${LIMITS.opsPageMax}`);
       const result = await getOpsSince(deps.db(), actorFrom(user), id, since.data, limit?.data);
       if (!result) return notFound(id);
-      return Response.json(result);
+      const names = result.entries.length
+        ? await getUserNames(deps.db(), result.entries.map((e) => actorUserId(e.actor)))
+        : new Map<string, string>();
+      const entries = result.entries.map((e) => ({ ...e, actorName: displayActor(e.actor, names) }));
+      return Response.json({ ...result, entries });
     }),
 
     postOps: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
