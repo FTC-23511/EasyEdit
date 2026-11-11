@@ -3,6 +3,7 @@ import { projects } from "@/db/schema";
 import { meetsRole } from "@/lib/access-rules";
 import { createProject, getProject } from "@/lib/projects/service";
 import { ServiceError } from "@/lib/service-error";
+import { isStorableText } from "@/lib/text";
 import { escapeQuoted } from "@/lib/timeline";
 import { checkProjectBudget } from "../budget";
 import { roleMessage } from "../errors";
@@ -35,14 +36,17 @@ export async function createProjectTool(ctx: ToolContext, input: { name: string;
 }
 
 // A live project this actor created in the last minute with the same trimmed name and the same format.
+// A name the database cannot store has no twin; skipping the lookup lets the service refuse it with its sentence.
 async function findTwin(ctx: ToolContext, input: { name: string; format: string }): Promise<string | null> {
+  const name = input.name.trim();
+  if (!isStorableText(name)) return null;
   const rows = await ctx.db
     .select({ id: projects.id })
     .from(projects)
     .where(
       and(
         eq(projects.createdBy, ctx.actor.userId),
-        eq(projects.name, input.name.trim()),
+        eq(projects.name, name),
         sql`${projects.format} = ${input.format}`,
         isNull(projects.deletedAt),
         sql`${projects.createdAt} > now() - ${TWIN_WINDOW}`,

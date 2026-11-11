@@ -1,4 +1,5 @@
-import { sql } from "drizzle-orm";
+import { inspect } from "node:util";
+import { DrizzleQueryError, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { rowsOf, type DB } from "@/db";
 import * as route from "@/app/api/mcp/route";
@@ -149,7 +150,31 @@ describe("POST /api/mcp", () => {
     try {
       const r = await app.callTool(c.accessToken, "list_projects");
       expect(r).toEqual({ isError: true, text: UNEXPECTED });
-      expect(logged).toHaveBeenCalledWith("Connector tool failed", "list_projects", expect.any(Error));
+      expect(logged).toHaveBeenCalledWith("Connector tool failed", "list_projects", "Error");
+    } finally {
+      broken.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  it("a failed query logs its class and database code, never the call's arguments", async () => {
+    const c = await app.connect("grace@gmail.com");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const services = await import("@/lib/projects/service");
+    const secret = "proj-7f3c-private";
+    const pgError = (code: string) => Object.assign(new Error(`invalid input near "${secret}"`), { code });
+    const broken = vi
+      .spyOn(services, "getProject")
+      .mockRejectedValueOnce(new DrizzleQueryError('select "id" from "projects" where "id" = $1', [secret], pgError("22021")))
+      .mockRejectedValueOnce(pgError("57014"));
+    try {
+      expect(await app.callTool(c.accessToken, "get_project", { project_id: secret })).toEqual({ isError: true, text: UNEXPECTED });
+      expect(await app.callTool(c.accessToken, "get_project", { project_id: secret })).toEqual({ isError: true, text: UNEXPECTED });
+      expect(logged).toHaveBeenCalledWith("Connector tool failed", "get_project", "DrizzleQueryError", "22021");
+      expect(logged).toHaveBeenCalledWith("Connector tool failed", "get_project", "Error", "57014");
+      for (const args of logged.mock.calls) {
+        for (const arg of args) expect(inspect(arg, { depth: 10 })).not.toContain(secret);
+      }
     } finally {
       broken.mockRestore();
       logged.mockRestore();

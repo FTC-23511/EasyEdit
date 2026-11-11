@@ -36,6 +36,8 @@ describe("create_project", () => {
     const ctx = await toolContext(db);
     expect(await createProjectTool(ctx, { name: "   ", format: "short_9x16" })).toEqual({ isError: true, text: "Enter a name up to 100 characters." });
     expect(await createProjectTool(ctx, { name: "x".repeat(101), format: "short_9x16" })).toMatchObject({ isError: true });
+    // A character the database cannot store gets the same sentence, not a failed lookup.
+    expect(await createProjectTool(ctx, { name: "a\u0000b", format: "short_9x16" })).toEqual({ isError: true, text: "Enter a name up to 100 characters." });
     expect(await createProjectTool(ctx, { name: "OK", format: "imax" })).toEqual({ isError: true, text: "Pick a format." });
     const viewer = await toolContext(db, { id: "u3", role: "viewer" });
     expect(await createProjectTool(viewer, { name: "Mine", format: "short_9x16" })).toEqual({

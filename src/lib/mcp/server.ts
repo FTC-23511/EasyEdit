@@ -32,14 +32,27 @@ Ops:
 A text CLIP: {"type":"text","start":F,"duration":F,"text":S,"transform":{"x":0.5,"y":0.5,"scale":1,"rotation":0,"opacity":1,"fit":"contain"},"style":{"fontFamily":"Geist","fontSize":96,"fontWeight":700,"color":"#ffffff","align":"center"}}
 x and y place the clip's center as a fraction of the frame: 0.5, 0.5 is the middle. Only text clips can be added today. For plain text, add_text is simpler.`;
 
-// Every tool answers through here. A thrown error is logged by tool name only (never its arguments) and Claude reads UNEXPECTED.
+// A database error code (such as "22021"), on the error or its cause. Only a short plain token is taken.
+function errorCode(error: unknown): string | undefined {
+  for (const candidate of [error, (error as { cause?: unknown } | null)?.cause]) {
+    const code = (candidate as { code?: unknown } | null)?.code;
+    if (typeof code === "string" && /^[A-Za-z0-9_]{1,32}$/.test(code)) return code;
+  }
+  return undefined;
+}
+
+// Every tool answers through here, and Claude reads UNEXPECTED when one throws.
+// The log gets the tool name, the error's class and its database code. Never the error itself, its message or its stack:
+// a failed query's message holds the values bound to it, which are the tool's arguments.
 function answer<Input>(name: string, tool: (input: Input) => Promise<ToolResult>) {
   return async (input: Input) => {
     try {
       const { text, isError } = await tool(input);
       return { content: [{ type: "text" as const, text }], isError };
     } catch (error) {
-      console.error("Connector tool failed", name, error);
+      const kind = error instanceof Error ? error.constructor.name : typeof error;
+      const code = errorCode(error);
+      console.error("Connector tool failed", name, kind, ...(code ? [code] : []));
       return { content: [{ type: "text" as const, text: UNEXPECTED }], isError: true };
     }
   };
