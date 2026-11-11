@@ -28,6 +28,15 @@ async function setup(requireUser: (min: string) => Promise<CurrentUser> = async 
 }
 
 describe("admin actions", () => {
+  it("adding an existing member returns an error and leaves their role alone", async () => {
+    const { db, revalidate, actions } = await setup();
+    await addEntry(db, { email: "kid@gmail.com", role: "viewer", invitedBy: admin.email });
+    expect(await actions.addMember(form({ email: "Kid@gmail.com", role: "admin" })))
+      .toEqual({ error: "That email is already a member. Change their role in the table." });
+    expect((await listEntries(db)).find((e) => e.email === "kid@gmail.com")?.role).toBe("viewer");
+    expect(revalidate).not.toHaveBeenCalled();
+  });
+
   it("rejects every action for a non-admin and leaves the allowlist unchanged", async () => {
     const { db, revalidate, requireSpy, actions } = await setup(async () => {
       throw new Error("FORBIDDEN");

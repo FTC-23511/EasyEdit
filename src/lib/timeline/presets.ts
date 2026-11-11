@@ -10,14 +10,14 @@ export const FORMAT_PRESETS: Record<FormatId, { width: number; height: number; l
 
 export const DEFAULT_FPS = 30;
 
-export const DEFAULT_TRANSFORM: Transform = {
+export const DEFAULT_TRANSFORM: Readonly<Transform> = Object.freeze({
   x: 0.5,
   y: 0.5,
   scale: 1,
   rotation: 0,
   opacity: 1,
   fit: "cover",
-};
+});
 
 export const TRACK_ACCEPTS: Record<TrackKind, Clip["type"][]> = {
   video: ["video", "image"],

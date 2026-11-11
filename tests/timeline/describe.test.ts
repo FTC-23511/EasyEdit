@@ -91,4 +91,20 @@ Track a1 [audio] "Audio 1"
     expect(framesToSeconds(45, 30)).toBe("1.50");
     expect(framesToSeconds(0, 30)).toBe("0.00");
   });
+
+  it("escapes quotes, backslashes, newlines and line separators in track names", () => {
+    const d = createEmptyDoc("short_9x16");
+    d.tracks[0].name = 'Say "hi"\\\nnext\u2028line\u2029end';
+    const out = describe(d);
+    expect(out.split("\n")).toHaveLength(9);
+    expect(out).toContain(String.raw`Track v1 [video] "Say \"hi\"\\\nnext\u2028line\u2029end"`);
+    expect(out).not.toMatch(/[\u2028\u2029]/);
+    expect(describe(withText('He said "go"'))).toContain(String.raw`"He said \"go\""`);
+  });
+
+  it("never splits an emoji when truncating", () => {
+    const family = "👨‍👩‍👧";
+    expect(describe(withText("A".repeat(39) + family + "BC"))).toContain(`"${"A".repeat(39)}${family}…"`);
+    expect(describe(withText("🇺🇸".repeat(41)))).toContain(`"${"🇺🇸".repeat(40)}…"`);
+  });
 });

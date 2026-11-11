@@ -10,8 +10,8 @@ export const ROLE_RANK: Record<Role, number> = { viewer: 1, editor: 2, admin: 3 
 export const SEED_ADMIN_EMAIL = "admin@seattlesolvers.com";
 
 export class AllowlistError extends Error {
-  code: "LAST_ADMIN" | "INVALID_EMAIL";
-  constructor(code: "LAST_ADMIN" | "INVALID_EMAIL", message: string) {
+  code: "LAST_ADMIN" | "INVALID_EMAIL" | "ALREADY_MEMBER";
+  constructor(code: "LAST_ADMIN" | "INVALID_EMAIL" | "ALREADY_MEMBER", message: string) {
     super(message);
     this.name = "AllowlistError";
     this.code = code;
@@ -63,19 +63,15 @@ export async function addEntry(
 ): Promise<void> {
   const email = validEmail(input.email);
   const invitedBy = normalizeEmail(input.invitedBy);
-  // The insert's source row comes from the locked-admins CTE, so admin rows are locked before the target row.
-  // One statement: a conflicting row is only changed if it is not the last admin being demoted.
   const result = await db.execute(sql`
-    with ${LOCKED_ADMINS}, n as (select count(*) as c from admins)
     insert into allowlist (email, role, invited_by)
-    select ${email}::text, ${input.role}::text, ${invitedBy}::text from n
-    on conflict (email) do update set role = excluded.role
-    where allowlist.role <> 'admin'
-       or excluded.role = 'admin'
-       or (select c from n) > 1
+    values (${email}, ${input.role}, ${invitedBy})
+    on conflict (email) do nothing
     returning email
   `);
-  if (rowsOf(result).length === 0) throw lastAdminError();
+  if (rowsOf(result).length === 0) {
+    throw new AllowlistError("ALREADY_MEMBER", `Already a member: ${email}`);
+  }
 }
 
 export async function setRole(db: DB, email: string, role: Role): Promise<void> {

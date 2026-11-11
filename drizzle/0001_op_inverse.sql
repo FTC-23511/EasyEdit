@@ -1,0 +1,1 @@
+ALTER TABLE "project_ops" ADD COLUMN "inverse" jsonb;

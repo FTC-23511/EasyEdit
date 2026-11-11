@@ -1,13 +1,14 @@
 import { notFound } from "next/navigation";
 import { getDb } from "@/db";
 import { requireUser } from "@/lib/access";
+import { actorFrom } from "@/lib/actor";
 import { getProject } from "@/lib/projects/service";
 import { describe } from "@/lib/timeline";
 
 export default async function EditorPage({ params }: PageProps<"/editor/[id]">) {
-  await requireUser();
+  const actor = actorFrom(await requireUser());
   const { id } = await params;
-  const project = await getProject(getDb(), id);
+  const project = await getProject(getDb(), actor, id);
   if (!project) notFound();
 
   return (

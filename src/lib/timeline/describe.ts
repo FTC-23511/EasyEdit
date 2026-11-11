@@ -1,3 +1,4 @@
+import { graphemes } from "@/lib/text";
 import { docDuration } from "./presets";
 import type { Clip, Track, TimelineDoc } from "./types";
 
@@ -7,9 +8,25 @@ export function framesToSeconds(f: number, fps: number): string {
   return (f / fps).toFixed(2);
 }
 
+const ESCAPES: Record<string, string> = {
+  "\\": "\\\\",
+  '"': '\\"',
+  "\n": "\\n",
+  "\r": "\\r",
+  "\t": "\\t",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029",
+};
+
+function escapeQuoted(text: string): string {
+  return text.replace(/[\\"\n\r\t\u2028\u2029]/g, (ch) => ESCAPES[ch]);
+}
+
 function describeText(text: string): string {
   const flat = text.replace(/\r\n|\r|\n/g, " ");
-  return flat.length > TEXT_PREVIEW_CHARS ? `${flat.slice(0, TEXT_PREVIEW_CHARS)}…` : flat;
+  const chars = graphemes(flat);
+  const shown = chars.length > TEXT_PREVIEW_CHARS ? `${chars.slice(0, TEXT_PREVIEW_CHARS).join("")}…` : flat;
+  return escapeQuoted(shown);
 }
 
 function describeClip(clip: Clip, fps: number): string {
@@ -27,7 +44,7 @@ function describeTrack(track: Track, fps: number): string[] {
     track.locked && "locked",
   ].filter(Boolean);
   const suffix = flags.length > 0 ? ` (${flags.join(", ")})` : "";
-  const lines = [`Track ${track.id} [${track.kind}] "${track.name}"${suffix}`];
+  const lines = [`Track ${track.id} [${track.kind}] "${escapeQuoted(track.name)}"${suffix}`];
   if (track.clips.length === 0) {
     lines.push("  (empty)");
   } else {

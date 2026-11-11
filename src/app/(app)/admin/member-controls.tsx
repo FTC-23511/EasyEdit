@@ -1,41 +1,9 @@
 "use client";
 
-import { unstable_rethrow } from "next/navigation";
-import { useRef, useState, useTransition } from "react";
+import { useRef, useState } from "react";
+import { ConfirmButton } from "../confirm-button";
+import { ErrorText, useAction } from "../action-ui";
 import { addMemberAction, removeMemberAction, setRoleAction } from "./actions";
-
-type ActionResult = { error?: string };
-
-type Outcome = { onSuccess?: () => void; onFailure?: () => void };
-
-function useAction(action: (formData: FormData) => Promise<ActionResult>) {
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  function submit(formData: FormData, { onSuccess, onFailure }: Outcome = {}) {
-    startTransition(async () => {
-      let message: string | null;
-      try {
-        message = (await action(formData)).error ?? null;
-      } catch (e) {
-        unstable_rethrow(e);
-        message = "Something went wrong. Try again.";
-      }
-      setError(message);
-      if (message === null) onSuccess?.();
-      else onFailure?.();
-    });
-  }
-  return { error, pending, submit };
-}
-
-function ErrorText({ message }: { message: string | null }) {
-  if (!message) return null;
-  return (
-    <p role="alert" className="text-sm text-red-700">
-      {message}
-    </p>
-  );
-}
 
 const ROLE_OPTIONS = ["admin", "editor", "viewer"] as const;
 
@@ -77,18 +45,17 @@ export function RemoveButton({ email }: { email: string }) {
   const { error, pending, submit } = useAction(removeMemberAction);
   return (
     <div className="flex flex-col items-start gap-1">
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => {
+      <ConfirmButton
+        label="Remove"
+        question={`Remove ${email}?`}
+        confirmLabel="Remove"
+        pending={pending}
+        onConfirm={() => {
           const formData = new FormData();
           formData.set("email", email);
           submit(formData);
         }}
-        className="rounded-md border border-red-300 px-2 py-1 text-sm text-red-700 disabled:opacity-60"
-      >
-        Remove
-      </button>
+      />
       <ErrorText message={error} />
     </div>
   );

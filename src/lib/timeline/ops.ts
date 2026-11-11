@@ -1,24 +1,38 @@
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { OpError } from "./errors";
-import { Clip, FormatId, MediaClip, TextClip, Track, TrackKind } from "./types";
+import { Clip, FormatId, MediaClip, TextClip, TextStyle, Track, TrackKind, TrackName, Transform } from "./types";
 
 const id = z.string().min(1);
 const optionalId = { id: id.optional() };
 
 const TrackPatch = z.object({
-  name: z.string().optional(),
+  name: TrackName.optional(),
   muted: z.boolean().optional(),
   hidden: z.boolean().optional(),
   locked: z.boolean().optional(),
 });
+
+// The fields update_clip can change, each optional. transform and style list only the sub-keys they compare.
+const ClipExpect = z
+  .object({
+    assetId: MediaClip.shape.assetId,
+    in: MediaClip.shape.in,
+    speed: MediaClip.shape.speed,
+    volume: MediaClip.shape.volume,
+    text: TextClip.shape.text,
+    transform: Transform.partial().strict(),
+    style: TextStyle.partial().strict(),
+  })
+  .partial()
+  .strict();
 
 const ClipInput = z.discriminatedUnion("type", [
   MediaClip.extend(optionalId),
   TextClip.extend(optionalId),
 ]);
 
-const newTrack = { kind: TrackKind, name: z.string() };
+const newTrack = { kind: TrackKind, name: TrackName };
 
 const addTrackOp = <T extends z.ZodType>(trackId: T) =>
   z.object({
@@ -26,35 +40,54 @@ const addTrackOp = <T extends z.ZodType>(trackId: T) =>
     track: z.object({ id: trackId, ...newTrack }),
     index: z.number().int().optional(),
   });
+// With ripple, every clip at or after the new clip's start first moves right by its duration.
 const addClipOp = <T extends z.ZodType>(clipSchema: T) =>
-  z.object({ op: z.literal("add_clip"), trackId: id, clip: clipSchema });
+  z.object({ op: z.literal("add_clip"), trackId: id, clip: clipSchema, ripple: z.literal(true).optional() });
 const splitClipOp = <T extends z.ZodType>(newClipId: T) =>
   z.object({ op: z.literal("split_clip"), clipId: id, at: z.number().int(), newClipId });
 
 // Ops with no optional ids: one definition, shared by Op and OpInput.
 const sharedOps = [
-  z.object({ op: z.literal("remove_track"), trackId: id }),
-  z.object({ op: z.literal("update_track"), trackId: id, patch: TrackPatch }),
+  // expect: the track's clip ids, in any order.
+  z.object({ op: z.literal("remove_track"), trackId: id, expect: z.object({ clipIds: z.array(id) }).strict().optional() }),
+  z.object({ op: z.literal("update_track"), trackId: id, patch: TrackPatch, expect: TrackPatch.strict().optional() }),
   z.object({
     op: z.literal("replace_track"),
     track: Track,
     index: z.number().int().min(0),
+    restore: z.literal(true).optional(),
   }),
-  z.object({ op: z.literal("remove_clip"), clipId: id, ripple: z.boolean().optional() }),
+  z.object({
+    op: z.literal("remove_clip"),
+    clipId: id,
+    ripple: z.boolean().optional(),
+    expect: z.object({ start: z.number().int(), duration: z.number().int() }).strict().optional(),
+  }),
   z.object({
     op: z.literal("move_clip"),
     clipId: id,
     start: z.number().int().min(0),
     trackId: id.optional(),
+    expect: z.object({ start: z.number().int(), trackId: id.optional() }).strict().optional(),
   }),
   z.object({
     op: z.literal("trim_clip"),
     clipId: id,
     edge: z.enum(["start", "end"]),
     to: z.number().int(),
+    in: z.number().int().min(0).optional(),
+    expect: z
+      .object({ start: z.number().int(), duration: z.number().int().optional(), in: z.number().int().optional() })
+      .strict()
+      .optional(),
   }),
-  z.object({ op: z.literal("update_clip"), clipId: id, patch: z.record(z.string(), z.unknown()) }),
-  z.object({ op: z.literal("set_format"), format: FormatId }),
+  z.object({
+    op: z.literal("update_clip"),
+    clipId: id,
+    patch: z.record(z.string(), z.unknown()),
+    expect: ClipExpect.optional(),
+  }),
+  z.object({ op: z.literal("set_format"), format: FormatId, expect: z.object({ format: FormatId }).strict().optional() }),
 ] as const;
 
 export const Op = z.discriminatedUnion("op", [

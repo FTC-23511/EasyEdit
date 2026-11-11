@@ -5,7 +5,9 @@ export type OpErrorCode =
   | "TRACK_LOCKED"
   | "INVALID"
   | "TRIM_OUT_OF_RANGE"
-  | "DUPLICATE_ID";
+  | "DUPLICATE_ID"
+  | "STALE"
+  | "LIMIT_EXCEEDED";
 
 export class OpError extends Error {
   code: OpErrorCode;

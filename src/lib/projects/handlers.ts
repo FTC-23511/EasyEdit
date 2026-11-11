@@ -1,26 +1,47 @@
 import { z } from "zod";
 import type { DB } from "@/db";
 import type { CurrentUser } from "@/lib/access-rules";
-import type { Role } from "@/lib/allowlist/service";
-import { applyProjectOps, createProject, getOpsSince, getProject, listProjects } from "@/lib/projects/service";
-import { createProjectInput } from "@/lib/projects/schemas";
+import { actorFrom } from "@/lib/actor";
+import { apiRoute } from "@/lib/api-route";
+import { LIMITS } from "@/lib/limits";
+import {
+  applyProjectOps,
+  createProject,
+  deleteProject,
+  duplicateProject,
+  getOpsSince,
+  getProject,
+  getProjectVersion,
+  listProjects,
+  renameProject,
+} from "@/lib/projects/service";
+import type { ErrorBody } from "@/lib/service-error";
 import type { OpInput } from "@/lib/timeline";
 
+// Authentication only: the service checks the role.
 export type HandlerDeps = {
   db: () => DB;
-  auth: (req: Request, min: Role) => Promise<CurrentUser | Response>;
+  auth: (req: Request) => Promise<CurrentUser | Response>;
 };
 
 export type ProjectRouteContext = { params: Promise<{ id: string }> };
 
 const opsBody = z.object({
   baseVersion: z.number().int().min(0),
-  ops: z.array(z.unknown()).min(1).max(500),
+  ops: z.array(z.unknown()).min(1),
+  strict: z.boolean().optional(),
+  requestId: z.string().optional(), // the service checks its format
 });
 
-const sinceParam = z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER));
+// Only the shape; the service checks the name and format themselves.
+const createBody = z.object({ name: z.string(), format: z.string() });
 
-type ErrorBody = { code: string; message: string; opIndex?: number; currentVersion?: number };
+const renameBody = z.object({ name: z.string() });
+
+// Versions are Postgres integers.
+const sinceParam = z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(0).max(2_147_483_647));
+
+const limitParam = z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().min(1).max(LIMITS.opsPageMax));
 
 function errorResponse(status: number, body: ErrorBody): Response {
   return Response.json(body, { status });
@@ -46,28 +67,28 @@ async function readJson(req: Request): Promise<{ ok: true; value: unknown } | { 
 
 export function makeProjectHandlers(deps: HandlerDeps) {
   return {
-    async list(req: Request): Promise<Response> {
-      const user = await deps.auth(req, "viewer");
+    list: apiRoute(async (req: Request): Promise<Response> => {
+      const user = await deps.auth(req);
       if (user instanceof Response) return user;
-      return Response.json({ projects: await listProjects(deps.db()) });
-    },
+      return Response.json({ projects: await listProjects(deps.db(), actorFrom(user)) });
+    }),
 
-    async create(req: Request): Promise<Response> {
-      const user = await deps.auth(req, "editor");
+    create: apiRoute(async (req: Request): Promise<Response> => {
+      const user = await deps.auth(req);
       if (user instanceof Response) return user;
       const json = await readJson(req);
       if (!json.ok) return invalid("Body must be valid JSON");
-      const parsed = createProjectInput.safeParse(json.value);
+      const parsed = createBody.safeParse(json.value);
       if (!parsed.success) return invalid(describeIssue(parsed.error));
-      const { id } = await createProject(deps.db(), { ...parsed.data, actor: user.id });
+      const { id } = await createProject(deps.db(), actorFrom(user), parsed.data);
       return Response.json({ id }, { status: 201 });
-    },
+    }),
 
-    async get(req: Request, ctx: ProjectRouteContext): Promise<Response> {
-      const user = await deps.auth(req, "viewer");
+    get: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
       if (user instanceof Response) return user;
       const { id } = await ctx.params;
-      const project = await getProject(deps.db(), id);
+      const project = await getProject(deps.db(), actorFrom(user), id);
       if (!project) return notFound(id);
       return Response.json({
         id: project.id,
@@ -76,40 +97,78 @@ export function makeProjectHandlers(deps: HandlerDeps) {
         doc: project.doc,
         version: project.version,
       });
-    },
+    }),
+
+    version: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
+      if (user instanceof Response) return user;
+      const { id } = await ctx.params;
+      const version = await getProjectVersion(deps.db(), actorFrom(user), id);
+      if (version === null) return notFound(id);
+      return Response.json({ version });
+    }),
+
+    rename: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
+      if (user instanceof Response) return user;
+      const { id } = await ctx.params;
+      const json = await readJson(req);
+      if (!json.ok) return invalid("Body must be valid JSON");
+      const parsed = renameBody.safeParse(json.value);
+      if (!parsed.success) return invalid(describeIssue(parsed.error));
+      return Response.json(await renameProject(deps.db(), actorFrom(user), id, parsed.data.name));
+    }),
+
+    remove: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
+      if (user instanceof Response) return user;
+      const { id } = await ctx.params;
+      await deleteProject(deps.db(), actorFrom(user), id);
+      return new Response(null, { status: 204 });
+    }),
+
+    duplicate: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
+      if (user instanceof Response) return user;
+      const { id } = await ctx.params;
+      const copy = await duplicateProject(deps.db(), actorFrom(user), id);
+      return Response.json({ id: copy.id }, { status: 201 });
+    }),
   };
 }
 
 export function makeOpsHandlers(deps: HandlerDeps) {
   return {
-    async getSince(req: Request, ctx: ProjectRouteContext): Promise<Response> {
-      const user = await deps.auth(req, "viewer");
+    getSince: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
       if (user instanceof Response) return user;
       const { id } = await ctx.params;
       const since = sinceParam.safeParse(new URL(req.url).searchParams.get("since"));
       if (!since.success) return invalid("since must be a non-negative integer");
-      const result = await getOpsSince(deps.db(), id, since.data);
+      const rawLimit = new URL(req.url).searchParams.get("limit");
+      const limit = rawLimit === null ? undefined : limitParam.safeParse(rawLimit);
+      if (limit && !limit.success) return invalid(`limit must be an integer from 1 to ${LIMITS.opsPageMax}`);
+      const result = await getOpsSince(deps.db(), actorFrom(user), id, since.data, limit?.data);
       if (!result) return notFound(id);
       return Response.json(result);
-    },
+    }),
 
-    async postOps(req: Request, ctx: ProjectRouteContext): Promise<Response> {
-      const user = await deps.auth(req, "editor");
+    postOps: apiRoute(async (req: Request, ctx: ProjectRouteContext): Promise<Response> => {
+      const user = await deps.auth(req);
       if (user instanceof Response) return user;
       const { id } = await ctx.params;
       const json = await readJson(req);
       if (!json.ok) return invalid("Body must be valid JSON");
       const parsed = opsBody.safeParse(json.value);
       if (!parsed.success) return invalid(describeIssue(parsed.error));
-      const result = await applyProjectOps(deps.db(), {
+      const { version, ops, inverse } = await applyProjectOps(deps.db(), actorFrom(user), {
         projectId: id,
         baseVersion: parsed.data.baseVersion,
         ops: parsed.data.ops as OpInput[],
-        actor: user.id,
+        strict: parsed.data.strict,
+        requestId: parsed.data.requestId,
       });
-      if (result.ok) return Response.json({ version: result.version, ops: result.ops });
-      const { status, code, message, opIndex, currentVersion } = result;
-      return errorResponse(status, { code, message, opIndex, currentVersion });
-    },
+      return Response.json({ version, ops, inverse });
+    }),
   };
 }

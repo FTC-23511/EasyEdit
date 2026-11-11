@@ -1,15 +1,25 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db";
 import { requireUser } from "@/lib/access";
-import { createProjectInput } from "@/lib/projects/schemas";
-import { createProject } from "@/lib/projects/service";
+import { makeDashboardActions, type FormState } from "@/lib/projects/dashboard-actions";
 
-export async function createProjectAction(formData: FormData): Promise<void> {
-  const user = await requireUser("editor");
-  const parsed = createProjectInput.safeParse({ name: formData.get("name"), format: formData.get("format") });
-  if (!parsed.success) redirect("/dashboard");
-  const { id } = await createProject(getDb(), { ...parsed.data, actor: user.id });
-  redirect(`/editor/${id}`);
+const actions = makeDashboardActions({ db: getDb, requireUser, revalidate: revalidatePath, redirect });
+
+export async function createProjectAction(prev: FormState, formData: FormData): Promise<FormState> {
+  return actions.create(prev, formData);
+}
+
+export async function renameProjectAction(formData: FormData): Promise<FormState> {
+  return actions.rename(formData);
+}
+
+export async function deleteProjectAction(formData: FormData): Promise<FormState> {
+  return actions.remove(formData);
+}
+
+export async function duplicateProjectAction(formData: FormData): Promise<FormState> {
+  return actions.duplicate(formData);
 }

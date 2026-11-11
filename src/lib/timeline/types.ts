@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { LIMITS } from "@/lib/limits";
+import { UNSTORABLE_TEXT, isStorableText } from "@/lib/text";
+
+export const TrackName = z.string().max(LIMITS.trackNameChars).refine(isStorableText, UNSTORABLE_TEXT);
 
 export const FormatId = z.enum(["short_9x16", "feed_4x5", "square_1x1", "long_16x9", "long_4k"]);
 export type FormatId = z.infer<typeof FormatId>;
@@ -45,7 +49,7 @@ export type TextStyle = z.infer<typeof TextStyle>;
 export const TextClip = z.object({
   ...ClipBase,
   type: z.literal("text"),
-  text: z.string(),
+  text: z.string().max(LIMITS.textClipChars).refine(isStorableText, UNSTORABLE_TEXT),
   style: TextStyle,
 });
 export type TextClip = z.infer<typeof TextClip>;
@@ -56,7 +60,7 @@ export type Clip = z.infer<typeof Clip>;
 export const Track = z.object({
   id: z.string().min(1),
   kind: TrackKind,
-  name: z.string(),
+  name: TrackName,
   muted: z.boolean(),
   hidden: z.boolean(),
   locked: z.boolean(),

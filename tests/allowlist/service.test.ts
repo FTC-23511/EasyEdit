@@ -56,12 +56,16 @@ describe("allowlist service", () => {
     expect(await listEntries(db)).toEqual([]);
   });
 
-  it("addEntry upserts the role of an existing email", async () => {
+  it("addEntry refuses an email that is already a member and keeps its role", async () => {
     const db = await makeTestDb();
     await seedAdmin(db);
     await addEntry(db, { email: "kid@gmail.com", role: "viewer", invitedBy: SEED_ADMIN_EMAIL });
-    await addEntry(db, { email: "KID@gmail.com", role: "editor", invitedBy: SEED_ADMIN_EMAIL });
-    expect(await getRole(db, "kid@gmail.com")).toBe("editor");
+    await expect(addEntry(db, { email: " KID@gmail.com", role: "editor", invitedBy: SEED_ADMIN_EMAIL }))
+      .rejects.toMatchObject({ code: "ALREADY_MEMBER" });
+    expect(await getRole(db, "kid@gmail.com")).toBe("viewer");
+    await expect(addEntry(db, { email: " Admin@SeattleSolvers.com", role: "editor", invitedBy: SEED_ADMIN_EMAIL }))
+      .rejects.toMatchObject({ code: "ALREADY_MEMBER" });
+    expect(await getRole(db, SEED_ADMIN_EMAIL)).toBe("admin");
     expect(await listEntries(db)).toHaveLength(2);
   });
 
@@ -75,15 +79,6 @@ describe("allowlist service", () => {
     await expect(setRole(db, SEED_ADMIN_EMAIL, "editor")).resolves.toBeUndefined();
     expect(await getRole(db, SEED_ADMIN_EMAIL)).toBe("editor");
     await expect(removeEntry(db, "coach@seattlesolvers.com")).rejects.toMatchObject({ code: "LAST_ADMIN" });
-  });
-
-  it("addEntry cannot demote the only admin", async () => {
-    const db = await makeTestDb();
-    await seedAdmin(db);
-    await expect(
-      addEntry(db, { email: " Admin@SeattleSolvers.com", role: "editor", invitedBy: SEED_ADMIN_EMAIL }),
-    ).rejects.toMatchObject({ code: "LAST_ADMIN" });
-    expect(await getRole(db, SEED_ADMIN_EMAIL)).toBe("admin");
   });
 
   it("setRole and removeEntry on an unknown email do nothing", async () => {

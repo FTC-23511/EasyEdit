@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LIMITS } from "@/lib/limits";
 import { OpError } from "./errors";
 import type { Op } from "./ops";
 import { FORMAT_PRESETS, TRACK_ACCEPTS } from "./presets";
@@ -14,10 +15,53 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+function isEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => isEqual(v, b[i]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((k) => k in b && isEqual(a[k], b[k]));
+  }
+  return false;
+}
+
+// The fields that differ between before and after, with their old and new values.
+function diffFields<T extends object>(before: T, after: T): { old: Partial<T>; now: Partial<T> } {
+  const old: Partial<T> = {};
+  const now: Partial<T> = {};
+  for (const key of Object.keys(before) as (keyof T)[]) {
+    if (!isEqual(before[key], after[key])) {
+      old[key] = before[key];
+      now[key] = after[key];
+    }
+  }
+  return { old, now };
+}
+
+// An op's `expect` guard: every listed field must still hold its listed value.
+// Plain objects (transform, style) compare only their listed sub-keys.
+function holds(current: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+  return Object.entries(expected).every(([key, value]) => {
+    if (value === undefined) return true;
+    const actual = current[key];
+    if (isPlainObject(value) && isPlainObject(actual)) {
+      return Object.entries(value).every(([sub, v]) => isEqual(actual[sub], v));
+    }
+    return isEqual(actual, value);
+  });
+}
+
+// The same ids, in any order.
+function sameIds(actual: string[], expected: string[]): boolean {
+  const set = new Set(expected);
+  return actual.length === expected.length && set.size === expected.length && actual.every((id) => set.has(id));
+}
+
 function sortTrack(track: Track) {
   track.clips.sort((a, b) => a.start - b.start);
 }
-
 
 function findTrack(doc: TimelineDoc, trackId: string, opIndex: number, opName: string) {
   const trackIndex = doc.tracks.findIndex((t) => t.id === trackId);
@@ -65,22 +109,40 @@ function assertNoOverlap(track: Track, opIndex: number, opName: string) {
   }
 }
 
+function assertRoomForTrack(doc: TimelineDoc, opIndex: number, opName: string) {
+  if (doc.tracks.length + 1 > LIMITS.tracksPerProject) {
+    throw new OpError("LIMIT_EXCEEDED", `${opName}: a project can have at most ${LIMITS.tracksPerProject} tracks`, opIndex);
+  }
+}
+
+function assertClipCount(trackId: string, countAfter: number, opIndex: number, opName: string) {
+  if (countAfter > LIMITS.clipsPerTrack) {
+    throw new OpError("LIMIT_EXCEEDED", `${opName}: track "${trackId}" can have at most ${LIMITS.clipsPerTrack} clips`, opIndex);
+  }
+}
+
+function assertOneCaptionTrack(doc: TimelineDoc, incoming: Track, replacedIndex: number, opIndex: number, opName: string) {
+  const countNow = doc.tracks.filter((t) => t.kind === "caption").length;
+  const replaced = replacedIndex >= 0 && doc.tracks[replacedIndex].kind === "caption" ? 1 : 0;
+  const countAfter = countNow - replaced + (incoming.kind === "caption" ? 1 : 0);
+  if (countAfter > 1 && countAfter > countNow) {
+    throw new OpError("INVALID", `${opName}: a project can have only one caption track`, opIndex);
+  }
+}
+
 function clipIdInUse(doc: TimelineDoc, clipId: string, exceptTrackId?: string): boolean {
   return doc.tracks.some((t) => t.id !== exceptTrackId && t.clips.some((c) => c.id === clipId));
 }
 
 export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inverse: Op[] } {
   const doc = structuredClone(input);
-  const inverse: Op[] = [];
-
-  const snapshot = (trackIndex: number): Op => ({
-    op: "replace_track",
-    track: structuredClone(doc.tracks[trackIndex]),
-    index: trackIndex,
-  });
+  // One group of inverse ops per op, each in apply order. The groups are reversed
+  // at the end, so a multi-op group keeps its own order.
+  const groups: Op[][] = [];
 
   ops.forEach((op, opIndex) => {
     const name = op.op;
+    const stale = (what: string) => new OpError("STALE", `${name}: ${what} changed since this edit`, opIndex);
     switch (op.op) {
       case "add_track": {
         if (doc.tracks.some((t) => t.id === op.track.id)) {
@@ -94,6 +156,8 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
             opIndex,
           );
         }
+        assertRoomForTrack(doc, opIndex, name);
+        assertOneCaptionTrack(doc, op.track as Track, -1, opIndex, name);
         doc.tracks.splice(index, 0, {
           id: op.track.id,
           kind: op.track.kind,
@@ -103,37 +167,53 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
           locked: false,
           clips: [],
         });
-        inverse.push({ op: "remove_track", trackId: op.track.id });
+        groups.push([{ op: "remove_track", trackId: op.track.id, expect: { clipIds: [] } }]);
         break;
       }
 
       case "remove_track": {
-        const { trackIndex } = findTrack(doc, op.trackId, opIndex, name);
-        inverse.push(snapshot(trackIndex));
-        doc.tracks.splice(trackIndex, 1);
+        const { track, trackIndex } = findTrack(doc, op.trackId, opIndex, name);
+        if (op.expect && !sameIds(track.clips.map((c) => c.id), op.expect.clipIds)) {
+          throw stale(`track "${op.trackId}"`);
+        }
+        const [removed] = doc.tracks.splice(trackIndex, 1);
+        groups.push([{ op: "replace_track", track: removed, index: trackIndex, restore: true }]);
         break;
       }
 
       case "update_track": {
-        const { track, trackIndex } = findTrack(doc, op.trackId, opIndex, name);
-        inverse.push(snapshot(trackIndex));
+        const { track } = findTrack(doc, op.trackId, opIndex, name);
+        if (op.expect && !holds(track, op.expect)) throw stale(`track "${op.trackId}"`);
+        const fields = (t: Track) => ({ name: t.name, muted: t.muted, hidden: t.hidden, locked: t.locked });
+        const before = fields(track);
         if (op.patch.name !== undefined) track.name = op.patch.name;
         if (op.patch.muted !== undefined) track.muted = op.patch.muted;
         if (op.patch.hidden !== undefined) track.hidden = op.patch.hidden;
         if (op.patch.locked !== undefined) track.locked = op.patch.locked;
+        const { old, now } = diffFields(before, fields(track));
+        if (Object.keys(old).length) {
+          groups.push([{ op: "update_track", trackId: op.trackId, patch: old, expect: now }]);
+        }
         break;
       }
 
       case "replace_track": {
         const incoming = structuredClone(op.track);
         const existingIndex = doc.tracks.findIndex((t) => t.id === incoming.id);
-        if (existingIndex < 0 && (op.index < 0 || op.index > doc.tracks.length)) {
+        if (op.restore && existingIndex >= 0) {
+          throw new OpError("DUPLICATE_ID", `${name}: track id "${incoming.id}" already exists`, opIndex);
+        }
+        if (!op.restore && existingIndex < 0 && (op.index < 0 || op.index > doc.tracks.length)) {
           throw new OpError(
             "INVALID",
             `${name}: index ${op.index} is outside 0..${doc.tracks.length} for track "${incoming.id}"`,
             opIndex,
           );
         }
+        if (existingIndex < 0) assertRoomForTrack(doc, opIndex, name);
+        assertOneCaptionTrack(doc, incoming, existingIndex, opIndex, name);
+        const before = existingIndex >= 0 ? doc.tracks[existingIndex].clips.length : 0;
+        if (incoming.clips.length > before) assertClipCount(incoming.id, incoming.clips.length, opIndex, name);
         const seen = new Set<string>();
         for (const c of incoming.clips) {
           if (seen.has(c.id) || clipIdInUse(doc, c.id, incoming.id)) {
@@ -145,23 +225,32 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
         sortTrack(incoming);
         assertNoOverlap(incoming, opIndex, name);
         if (existingIndex >= 0) {
-          inverse.push(snapshot(existingIndex));
+          groups.push([{ op: "replace_track", track: doc.tracks[existingIndex], index: existingIndex }]);
           doc.tracks[existingIndex] = incoming;
         } else {
-          inverse.push({ op: "remove_track", trackId: incoming.id });
-          doc.tracks.splice(op.index, 0, incoming);
+          groups.push([{ op: "remove_track", trackId: incoming.id, expect: { clipIds: incoming.clips.map((c) => c.id) } }]);
+          doc.tracks.splice(Math.min(op.index, doc.tracks.length), 0, incoming);
         }
         break;
       }
 
       case "add_clip": {
-        const { track, trackIndex } = findTrack(doc, op.trackId, opIndex, name);
+        const { track } = findTrack(doc, op.trackId, opIndex, name);
         assertUnlocked(track, opIndex, name);
         if (clipIdInUse(doc, op.clip.id)) {
           throw new OpError("DUPLICATE_ID", `${name}: clip id "${op.clip.id}" already exists`, opIndex);
         }
         assertAccepts(track, op.clip, opIndex, name);
-        inverse.push(snapshot(trackIndex));
+        assertClipCount(track.id, track.clips.length + 1, opIndex, name);
+        if (op.ripple) {
+          for (const c of track.clips) if (c.start >= op.clip.start) c.start += op.clip.duration;
+          // Guarded: if the new clip was moved or resized since, closing the gap where it now sits would leave one where it was.
+          groups.push([
+            { op: "remove_clip", clipId: op.clip.id, ripple: true, expect: { start: op.clip.start, duration: op.clip.duration } },
+          ]);
+        } else {
+          groups.push([{ op: "remove_clip", clipId: op.clip.id }]);
+        }
         track.clips.push(structuredClone(op.clip));
         sortTrack(track);
         assertNoOverlap(track, opIndex, name);
@@ -169,15 +258,16 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
       }
 
       case "remove_clip": {
-        const { track, trackIndex, clipIndex } = findClip(doc, op.clipId, opIndex, name);
+        const { track, clipIndex } = findClip(doc, op.clipId, opIndex, name);
         assertUnlocked(track, opIndex, name);
-        inverse.push(snapshot(trackIndex));
+        if (op.expect && !holds(track.clips[clipIndex], op.expect)) throw stale(`clip "${op.clipId}"`);
         const [removed] = track.clips.splice(clipIndex, 1);
         if (op.ripple) {
           const removedEnd = removed.start + removed.duration;
-          for (const c of track.clips) {
-            if (c.start >= removedEnd) c.start -= removed.duration;
-          }
+          for (const c of track.clips) if (c.start >= removedEnd) c.start -= removed.duration;
+          groups.push([{ op: "add_clip", trackId: track.id, clip: removed, ripple: true }]);
+        } else {
+          groups.push([{ op: "add_clip", trackId: track.id, clip: removed }]);
         }
         sortTrack(track);
         break;
@@ -185,15 +275,26 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
 
       case "move_clip": {
         const from = findClip(doc, op.clipId, opIndex, name);
+        const moving = from.track.clips[from.clipIndex];
+        if (op.expect && !holds({ start: moving.start, trackId: from.track.id }, op.expect)) {
+          throw stale(`clip "${op.clipId}"`);
+        }
         const to = op.trackId ? findTrack(doc, op.trackId, opIndex, name) : from;
         assertUnlocked(from.track, opIndex, name);
         assertUnlocked(to.track, opIndex, name);
-        const moving = from.track.clips[from.clipIndex];
         assertAccepts(to.track, moving, opIndex, name);
-        // The track that loses the clip is snapshotted first: undo runs in reverse,
-        // so it restores the destination before the source and no id is ever doubled.
-        inverse.push(snapshot(from.trackIndex));
-        if (to.trackIndex !== from.trackIndex) inverse.push(snapshot(to.trackIndex));
+        if (to.trackIndex !== from.trackIndex) assertClipCount(to.track.id, to.track.clips.length + 1, opIndex, name);
+        groups.push([
+          to.trackIndex === from.trackIndex
+            ? { op: "move_clip", clipId: op.clipId, start: moving.start, expect: { start: op.start } }
+            : {
+                op: "move_clip",
+                clipId: op.clipId,
+                start: moving.start,
+                trackId: from.track.id,
+                expect: { start: op.start, trackId: to.track.id },
+              },
+        ]);
         from.track.clips.splice(from.clipIndex, 1);
         moving.start = op.start;
         to.track.clips.push(moving);
@@ -203,9 +304,17 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
       }
 
       case "trim_clip": {
-        const { track, trackIndex, clipIndex } = findClip(doc, op.clipId, opIndex, name);
+        const { track, clipIndex } = findClip(doc, op.clipId, opIndex, name);
         assertUnlocked(track, opIndex, name);
         const target = track.clips[clipIndex];
+        if (op.expect && !holds(target, op.expect)) throw stale(`clip "${op.clipId}"`);
+        if (op.in !== undefined && (op.edge !== "start" || target.type === "text")) {
+          throw new OpError(
+            "INVALID",
+            `${name}: "in" is only allowed when trimming the start of a media clip`,
+            opIndex,
+          );
+        }
         const outOfRange = (why: string) =>
           new OpError("TRIM_OUT_OF_RANGE", `${name}: clip "${op.clipId}" ${why}`, opIndex);
         if (op.to < 0) throw outOfRange(`${op.edge} cannot move to frame ${op.to}`);
@@ -216,7 +325,10 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
           const delta = op.to - target.start;
           start = op.to;
           duration = target.duration - delta;
-          if (target.type !== "text") {
+          // An image has no source timeline, so a start trim leaves its `in` alone.
+          if (op.in !== undefined) {
+            sourceIn = op.in;
+          } else if (target.type === "video" || target.type === "audio") {
             sourceIn = target.in + Math.round(delta * target.speed);
             if (sourceIn < 0) throw outOfRange("cannot start before the start of its source");
           }
@@ -224,7 +336,25 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
           duration = op.to - target.start;
         }
         if (duration < 1) throw outOfRange(`would have a duration of ${duration} frames`);
-        inverse.push(snapshot(trackIndex));
+        // An end-trim undo sets the end, so it needs start and duration unchanged. A
+        // start-trim undo keeps the current end, so a later end trim by someone else survives it.
+        if (op.edge === "end") {
+          const to = target.start + target.duration;
+          groups.push([{ op: "trim_clip", clipId: op.clipId, edge: "end", to, expect: { start, duration } }]);
+        } else if (target.type === "text" || sourceIn === undefined) {
+          groups.push([{ op: "trim_clip", clipId: op.clipId, edge: "start", to: target.start, expect: { start } }]);
+        } else {
+          groups.push([
+            {
+              op: "trim_clip",
+              clipId: op.clipId,
+              edge: "start",
+              to: target.start,
+              in: target.in,
+              expect: { start, in: sourceIn },
+            },
+          ]);
+        }
         target.start = start;
         target.duration = duration;
         if (target.type !== "text" && sourceIn !== undefined) target.in = sourceIn;
@@ -234,7 +364,7 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
       }
 
       case "split_clip": {
-        const { track, trackIndex, clipIndex } = findClip(doc, op.clipId, opIndex, name);
+        const { track, clipIndex } = findClip(doc, op.clipId, opIndex, name);
         assertUnlocked(track, opIndex, name);
         const left = track.clips[clipIndex];
         const end = left.start + left.duration;
@@ -248,7 +378,17 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
         if (clipIdInUse(doc, op.newClipId)) {
           throw new OpError("DUPLICATE_ID", `${name}: clip id "${op.newClipId}" already exists`, opIndex);
         }
-        inverse.push(snapshot(trackIndex));
+        assertClipCount(track.id, track.clips.length + 1, opIndex, name);
+        groups.push([
+          { op: "remove_clip", clipId: op.newClipId, expect: { start: op.at, duration: end - op.at } },
+          {
+            op: "trim_clip",
+            clipId: op.clipId,
+            edge: "end",
+            to: end,
+            expect: { start: left.start, duration: op.at - left.start },
+          },
+        ]);
         const right = structuredClone(left);
         right.id = op.newClipId;
         right.start = op.at;
@@ -263,14 +403,15 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
       }
 
       case "update_clip": {
-        const { track, trackIndex, clipIndex } = findClip(doc, op.clipId, opIndex, name);
+        const { track, clipIndex } = findClip(doc, op.clipId, opIndex, name);
         assertUnlocked(track, opIndex, name);
+        const current = track.clips[clipIndex];
+        if (op.expect && !holds(current, op.expect)) throw stale(`clip "${op.clipId}"`);
         for (const key of FROZEN_CLIP_KEYS) {
           if (key in op.patch) {
             throw new OpError("INVALID", `${name}: "${key}" cannot be changed with update_clip`, opIndex);
           }
         }
-        const current = track.clips[clipIndex];
         const merged: Record<string, unknown> = { ...current };
         for (const [key, value] of Object.entries(op.patch)) {
           const existing = merged[key];
@@ -288,13 +429,36 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
             opIndex,
           );
         }
-        inverse.push(snapshot(trackIndex));
+        const before: Record<string, unknown> = current;
+        const after: Record<string, unknown> = result.data;
+        const undo: Record<string, unknown> = {};
+        const written: Record<string, unknown> = {};
+        for (const key of Object.keys(op.patch)) {
+          // Plain objects (transform, style) are compared one level deep, so the
+          // undo only touches the sub-keys this op changed.
+          const b = before[key];
+          const a = after[key];
+          if (isPlainObject(b) && isPlainObject(a)) {
+            const { old, now } = diffFields(b, a);
+            if (Object.keys(old).length) {
+              undo[key] = old;
+              written[key] = now;
+            }
+          } else if (!isEqual(b, a)) {
+            undo[key] = b;
+            written[key] = a;
+          }
+        }
+        if (Object.keys(undo).length) {
+          groups.push([{ op: "update_clip", clipId: op.clipId, patch: undo, expect: written }]);
+        }
         track.clips[clipIndex] = result.data as z.infer<typeof schema>;
         break;
       }
 
       case "set_format": {
-        inverse.push({ op: "set_format", format: doc.format });
+        if (op.expect && op.expect.format !== doc.format) throw stale("the format");
+        groups.push([{ op: "set_format", format: doc.format, expect: { format: op.format } }]);
         const preset = FORMAT_PRESETS[op.format];
         doc.format = op.format;
         doc.width = preset.width;
@@ -309,5 +473,5 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
     }
   });
 
-  return { doc, inverse: inverse.reverse() };
+  return { doc, inverse: groups.reverse().flat() };
 }

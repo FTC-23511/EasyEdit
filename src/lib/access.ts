@@ -1,3 +1,5 @@
+import "server-only";
+import { cache } from "react";
 import { headers } from "next/headers";
 import { forbidden, redirect } from "next/navigation";
 import { getDb } from "@/db";
@@ -13,9 +15,8 @@ async function currentUserFor(requestHeaders: Headers): Promise<CurrentUser | nu
   return resolveCurrentUser(getDb(), session?.user ?? null);
 }
 
-export async function getCurrentUser(): Promise<CurrentUser | null> {
-  return currentUserFor(await headers());
-}
+// One lookup per page render, however many layouts and pages ask.
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => currentUserFor(await headers()));
 
 export async function requireUser(min: Role = "viewer"): Promise<CurrentUser> {
   const user = await getCurrentUser();

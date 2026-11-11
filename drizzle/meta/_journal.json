@@ -8,6 +8,34 @@
       "when": 1794362123320,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794388416490,
+      "tag": "0001_op_inverse",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794388897628,
+      "tag": "0002_project_deleted_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794389753108,
+      "tag": "0003_allowlist_email_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794391478190,
+      "tag": "0004_op_request_id",
+      "breakpoints": true
     }
   ]
 }

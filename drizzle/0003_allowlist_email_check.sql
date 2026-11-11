@@ -1,0 +1,1 @@
+ALTER TABLE "allowlist" ADD CONSTRAINT "allowlist_email_normalized" CHECK ("allowlist"."email" = lower(trim("allowlist"."email")));

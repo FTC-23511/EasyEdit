@@ -15,6 +15,7 @@ const ROLES: readonly Role[] = ["admin", "editor", "viewer"];
 const ERROR_MESSAGES: Record<AllowlistError["code"], string> = {
   LAST_ADMIN: "There must always be at least one admin.",
   INVALID_EMAIL: "That doesn't look like an email address.",
+  ALREADY_MEMBER: "That email is already a member. Change their role in the table.",
 };
 
 function textField(formData: FormData, name: string): string {

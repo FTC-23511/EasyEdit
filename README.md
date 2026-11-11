@@ -8,7 +8,7 @@ This README gets the app running on your own computer. You will set up three thi
 
 - Sign in with Google. Anyone not on the allowlist is turned away.
 - An Admin page where admins add people, change their role, and remove them.
-- A dashboard where editors create projects in any of five video formats.
+- A dashboard where editors create projects in any of five video formats, and rename, duplicate and delete them. A deleted project is hidden and not shown again.
 - A project page that shows a text summary of the project.
 - A project API (see [The project API](#the-project-api)).
 
@@ -105,6 +105,8 @@ pnpm dev
 
 `pnpm db:seed` adds `admin@seattlesolvers.com` as an admin. It is safe to run again.
 
+When you pull changes that add migrations (new files in the `drizzle` folder), run `pnpm db:migrate` again before `pnpm dev`.
+
 Open [http://localhost:3000](http://localhost:3000) and click the Google sign-in button.
 
 ## First-run checklist
@@ -179,7 +181,7 @@ Every person on the allowlist has one of three roles.
 | Role | What they can do today |
 | --- | --- |
 | Viewer | Sign in, see the dashboard, open projects. Cannot create or change anything. |
-| Editor | Everything a viewer can, plus create projects and change them. |
+| Editor | Everything a viewer can, plus create, rename, duplicate and delete projects, and change them. Deleting hides a project; it is not shown again. |
 | Admin | Everything an editor can, plus open the Admin page to add, re-role and remove people. |
 
 Some rules:
@@ -210,10 +212,18 @@ All routes need you to be signed in (they use the same cookie as the website). B
 | `GET /api/projects` | viewer and up | List projects: `{ "projects": [...] }` |
 | `POST /api/projects` | editor and up | Create a project from `{ "name", "format" }`. Answers `201` with `{ "id" }`. |
 | `GET /api/projects/:id` | viewer and up | Get `{ id, name, format, doc, version }`. |
-| `GET /api/projects/:id/ops?since=N` | viewer and up | Get the changes after version `N`: `{ version, entries: [{ version, ops, actor }] }`. |
-| `POST /api/projects/:id/ops` | editor and up | Apply changes: send `{ "baseVersion": N, "ops": [...] }` (1 to 500 ops). Answers `{ version, ops }`. |
+| `GET /api/projects/:id/version` | viewer and up | Get just the current version: `{ version }`. |
+| `PATCH /api/projects/:id` | editor and up | Rename a project: send `{ "name" }`. Answers `{ id, name }`. |
+| `DELETE /api/projects/:id` | editor and up | Delete a project. Answers `204`. |
+| `POST /api/projects/:id/duplicate` | editor and up | Make a copy of a project. Answers `201` with `{ "id" }` of the copy. |
+| `GET /api/projects/:id/ops?since=N` | viewer and up | Get the changes after version `N`: `{ version, entries, hasMore }`. Each entry is `{ version, ops, inverse, actor, requestId, createdAt }`. Add `limit` to set the page size (default 100, at most 500). A page holds fewer entries when they are large. When `hasMore` is true, ask again from the `version` in the answer. |
+| `POST /api/projects/:id/ops` | editor and up | Apply changes: send `{ "baseVersion": N, "ops": [...] }` (1 to 500 ops). Answers `{ version, ops, inverse }`. |
 
 Edits are versioned. Send the version you last saw as `baseVersion`. Changes that do not clash with newer edits still apply. A `baseVersion` newer than the project is refused.
+
+`inverse` is the ops that undo this change, to send back later as an ordinary edit. To make a write that is refused unless `baseVersion` is exactly the current version, add `"strict": true`. A strict write is never applied on top of newer edits.
+
+To make a write safe to retry, add a `"requestId"` of 8 to 64 letters, digits, `-` or `_`. If a write with that `requestId` already landed in this project, the answer is the original one and nothing is applied again. Use a new `requestId` for every change and repeat it only to resend that same change: a different change sent under a used `requestId` is not applied. Each op-log entry shows its `requestId`, or `null` when none was sent.
 
 When a route refuses a request, the answer has this shape:
 
@@ -221,16 +231,18 @@ When a route refuses a request, the answer has this shape:
 { "code": "CONFLICT", "message": "...", "opIndex": 0, "currentVersion": 3 }
 ```
 
-`opIndex` (which op failed) and `currentVersion` only appear when they apply. An unexpected failure on the server (for example, the database is down) answers `500` without this shape.
+`opIndex` (which op failed) and `currentVersion` only appear when they apply. An unexpected failure answers `500` with `{ "code": "INTERNAL", "message" }`.
 
 | Status | `code` | Meaning |
 | --- | --- | --- |
-| 400 | `INVALID` | The body, query or an op is malformed. |
+| 400 | `INVALID` | The body, query, project name or an op is malformed, `ops` is empty, or the `requestId` is malformed or was already used by someone else. |
+| 400 | `LIMIT_EXCEEDED` | Too many ops (more than 500), tracks or clips, a change too large to store or too large to undo in one step, or the project is too large. |
+| 400 | `STALE` | An undo no longer applies, because that part of the project was changed since. |
 | 400 | `NOT_FOUND`, `OVERLAP`, `WRONG_TRACK_KIND`, `TRACK_LOCKED`, `TRIM_OUT_OF_RANGE`, `DUPLICATE_ID` | A valid op could not be applied to the project. `opIndex` says which one. |
 | 401 | `UNAUTHENTICATED` | Not signed in. |
-| 403 | `FORBIDDEN` | Your role does not allow this. |
+| 403 | `FORBIDDEN` | Your role does not allow this, or the request came from another site. |
 | 404 | `NOT_FOUND` | No project with that id. |
-| 409 | `CONFLICT` | The base version is ahead of the project, or the project kept changing. Reload and retry. |
+| 409 | `CONFLICT` | The base version is ahead of the project, a strict write was not at the current version, or the project kept changing. Reload and retry. |
 
 ## Commands
 

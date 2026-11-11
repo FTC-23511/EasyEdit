@@ -215,7 +215,7 @@ describe("applyOps: tracks", () => {
       locked: false,
       clips: [],
     });
-    expect(inverse).toEqual([{ op: "remove_track", trackId: "o1" }]);
+    expect(inverse).toEqual([{ op: "remove_track", trackId: "o1", expect: { clipIds: [] } }]);
     expect(apply(doc, inverse).doc).toEqual(d);
   });
 
@@ -286,7 +286,7 @@ describe("applyOps: tracks", () => {
     const track = { ...overlayTrack, muted: false, hidden: false, locked: false, clips: [] };
     const { doc, inverse } = apply(d, [{ op: "replace_track", track, index: 2 }]);
     expect(doc.tracks.map((t) => t.id)).toEqual(["v1", "t1", "o1", "cap", "a1"]);
-    expect(inverse).toEqual([{ op: "remove_track", trackId: "o1" }]);
+    expect(inverse).toEqual([{ op: "remove_track", trackId: "o1", expect: { clipIds: [] } }]);
     expect(apply(doc, inverse).doc).toEqual(d);
     failsWith(() => apply(d, [{ op: "replace_track", track, index: 9 }]), "INVALID", 0);
   });

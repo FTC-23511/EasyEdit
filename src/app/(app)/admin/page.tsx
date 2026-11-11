@@ -1,9 +1,8 @@
 import { getDb } from "@/db";
 import { requireUser } from "@/lib/access";
 import { listEntries } from "@/lib/allowlist/service";
+import { LocalDate } from "./local-date";
 import { AddMemberForm, RemoveButton, RoleSelect } from "./member-controls";
-
-const dateFormat = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" });
 
 export default async function AdminPage() {
   const me = await requireUser("admin");
@@ -32,7 +31,7 @@ export default async function AdminPage() {
                 <RoleSelect email={entry.email} role={entry.role} />
               </td>
               <td className="py-3 pr-4">{entry.invitedBy ?? "-"}</td>
-              <td className="py-3 pr-4">{dateFormat.format(entry.createdAt)}</td>
+              <td className="py-3 pr-4"><LocalDate iso={entry.createdAt.toISOString()} /></td>
               <td className="py-3">{entry.email !== me.email && <RemoveButton email={entry.email} />}</td>
             </tr>
           ))}

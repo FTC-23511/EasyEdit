@@ -198,7 +198,7 @@ describe("set_format", () => {
     const d = doc0();
     const { doc, inverse } = applyOps(d, [{ op: "set_format", format: "long_16x9" }]);
     expect(doc).toMatchObject({ format: "long_16x9", width: 1920, height: 1080 });
-    expect(inverse).toEqual([{ op: "set_format", format: "short_9x16" }]);
+    expect(inverse).toEqual([{ op: "set_format", format: "short_9x16", expect: { format: "long_16x9" } }]);
     expect(applyOps(doc, inverse).doc).toEqual(d);
   });
 
