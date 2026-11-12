@@ -9,7 +9,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
   return (
     <>
       <header className="flex items-center gap-6 border-b border-black/10 px-6 py-3 dark:border-white/15">
-        <span className="font-semibold">Seattle Solvers Studio</span>
+        <span className="font-semibold">EasyEdit</span>
         <nav className="flex flex-1 items-center gap-4 text-sm">
           <Link href="/dashboard">Dashboard</Link>
           {user.role === "admin" && <Link href="/admin">Admin</Link>}

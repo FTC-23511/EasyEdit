@@ -39,6 +39,6 @@ describe("the guide", () => {
   it("has no team section until the team has rules", () => {
     expect(TEAM_STYLE_RULES).toEqual([]);
     expect(guide).not.toContain("## Team style");
-    expect(guide.startsWith("# Seattle Solvers Studio editing guide\n")).toBe(true);
+    expect(guide.startsWith("# EasyEdit editing guide\n")).toBe(true);
   });
 });

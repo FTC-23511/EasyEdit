@@ -25,7 +25,7 @@ export default async function ConsentPage({ searchParams }: PageProps<"/consent"
       <div className="flex w-full max-w-sm flex-col gap-6">
         <h1 className="text-center text-2xl font-semibold tracking-tight">Connect Claude</h1>
         <div className="flex flex-col gap-3 text-sm">
-          <p>Claude is asking to use Seattle Solvers Studio as you.</p>
+          <p>Claude is asking to use EasyEdit as you.</p>
           <ul className="list-disc space-y-1 pl-5">
             <li>It will be able to see the team&apos;s projects.</li>
             {me.role === "viewer" ? (
@@ -38,7 +38,7 @@ export default async function ConsentPage({ searchParams }: PageProps<"/consent"
           <p>
             {verifiedHost !== null
               ? `The request comes from ${verifiedHost}.`
-              : `The request comes from an app that calls itself “${clientName}”. Seattle Solvers Studio cannot confirm who runs it.`}
+              : `The request comes from an app that calls itself “${clientName}”. EasyEdit cannot confirm who runs it.`}
           </p>
         </div>
         <p className={WARNING}>

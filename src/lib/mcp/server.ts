@@ -54,7 +54,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 
   server.registerPrompt(
     "editing-guide",
-    { title: "Editing guide", description: "Load the Seattle Solvers Studio editing guide into the conversation." },
+    { title: "Editing guide", description: "Load the EasyEdit editing guide into the conversation." },
     () => ({ messages: [{ role: "user" as const, content: { type: "text" as const, text: buildEditingGuide() } }] }),
   );
 

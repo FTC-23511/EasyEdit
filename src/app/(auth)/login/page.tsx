@@ -16,7 +16,7 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   return (
     <main className="flex flex-1 items-center justify-center px-6 py-24">
       <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
-        <h1 className="text-2xl font-semibold tracking-tight">Seattle Solvers Studio</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">EasyEdit</h1>
         {forClaude && <p>Sign in to connect Claude.</p>}
         {errorMessage !== null && (
           <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">

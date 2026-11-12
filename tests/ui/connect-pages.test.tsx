@@ -54,7 +54,7 @@ describe("the consent page", () => {
     vi.mocked(readConsentRequest).mockResolvedValue(ok({ clientName: "Claude", verifiedHost: "claude.ai" }));
     await show(ConsentPage, signedRequest);
     expect(screen.getByRole("heading").textContent).toBe("Connect Claude");
-    expect(screen.getByText("Claude is asking to use Seattle Solvers Studio as you.")).toBeTruthy();
+    expect(screen.getByText("Claude is asking to use EasyEdit as you.")).toBeTruthy();
     expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "It will be able to see the team's projects.",
       "It will be able to create projects and change them. Each change is listed in the editor as “Claude (for Ada)” and can be undone there.",
@@ -78,7 +78,7 @@ describe("the consent page", () => {
       "It will be able to see the team's projects.",
       "Your role is viewer, so it will not be able to change anything.",
     ]);
-    expect(screen.getByText("The request comes from an app that calls itself “Helper”. Seattle Solvers Studio cannot confirm who runs it.")).toBeTruthy();
+    expect(screen.getByText("The request comes from an app that calls itself “Helper”. EasyEdit cannot confirm who runs it.")).toBeTruthy();
   });
 
   it("shows only that the request has expired when it cannot be read", async () => {

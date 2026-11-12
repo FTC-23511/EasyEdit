@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Seattle Solvers Studio",
+  title: "EasyEdit",
   description: "Video editor for the Seattle Solvers FTC team.",
 };
 
