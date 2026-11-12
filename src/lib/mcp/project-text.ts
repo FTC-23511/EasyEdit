@@ -13,7 +13,7 @@ export function projectPage(
   if (page.lines.length > 0) out.push(...page.lines);
   else out.push("(no more lines)");
   if (page.next !== null) {
-    out.push(`… ${body.length - page.next} more lines. Call get_project with project_id "${project.id}" and cursor ${page.next} to read on.`);
+    out.push(`… ${body.length - page.next} more lines. Call get_project with project_id "${project.id}", cursor ${page.next} and version ${project.version} to read on.`);
   }
   return { text: out.join("\n"), next: page.next };
 }

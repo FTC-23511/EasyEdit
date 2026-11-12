@@ -23,6 +23,13 @@ export function notFoundText(projectId: string): string {
   return `No project with id "${projectId}". It may have been deleted. Call list_projects to see the ids.`;
 }
 
+// get_project's refusals for a page after the first.
+export const CURSOR_NEEDS_VERSION = "A cursor needs the version it came from. Read the project again from the start, without a cursor.";
+
+export function projectChangedWhileReading(current: number): string {
+  return `The project changed to version ${current} while you were reading. Read it again from the start, without a cursor.`;
+}
+
 // How to fix an op the engine refused, by its code.
 export const OP_HINTS: Record<OpErrorCode, string> = {
   NOT_FOUND: "Check the id against get_project. Ids are case-sensitive.",
@@ -63,9 +70,14 @@ export async function conflictResult(ctx: ToolContext, projectId: string, expect
           `Edit refused: the project changed after version ${expectedVersion}. It is now at version ${current}. ${NOTHING_APPLIED}`,
           ...(await unseenChanges(ctx, projectId, expectedVersion, current)),
         ];
+  const page = projectPage(project, { maxChars: ctx.limits.connectorEchoChars });
   lines.push("Current project:");
-  lines.push(projectPage(project, { maxChars: ctx.limits.connectorEchoChars }).text);
-  lines.push(`Plan again from this, then send your change with expected_version ${current}.`);
+  lines.push(page.text);
+  lines.push(
+    page.next === null
+      ? `Plan again from this, then send your change with expected_version ${current}.`
+      : `The project text above is cut. Read the rest with get_project, then send your change with expected_version ${current}.`,
+  );
   return fail(lines.join("\n"));
 }
 

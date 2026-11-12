@@ -208,9 +208,17 @@ describe("edit_timeline", () => {
     const r = await edit(version, [{ op: "update_clip", clipId: "k5", patch: { text: "CHANGED" } }]);
     expect(r.isError).toBe(false);
     expect(r.text.length).toBeLessThanOrEqual(LIMITS.connectorEchoChars + 500);
-    expect(r.text.split("\n").at(-1)).toMatch(/^… \d+ more lines\. Call get_project with project_id ".+" and cursor \d+ to read on\.$/);
+    expect(r.text.split("\n").at(-1)).toMatch(new RegExp(`^… \\d+ more lines\\. Call get_project with project_id ".+", cursor \\d+ and version ${version + 1} to read on\\.$`));
     const conflict = await edit(0, [addText(0)]);
     expect(conflict.text.length).toBeLessThanOrEqual(LIMITS.connectorEchoChars + 1500);
+  });
+
+  it("a conflict on a project too long to attach whole says to read the rest first", async () => {
+    const { db, id, edit } = await setup();
+    const version = await fillWithText(db, grace, id, 999);
+    const lines = (await edit(0, [addText(0)])).text.split("\n");
+    expect(lines.at(-2)).toMatch(new RegExp(`^… \\d+ more lines\\. Call get_project with project_id ".+", cursor \\d+ and version ${version} to read on\\.$`));
+    expect(lines.at(-1)).toBe(`The project text above is cut. Read the rest with get_project, then send your change with expected_version ${version}.`);
   });
 
   it("a repeat after someone else's change gets the first change back, and says the project has moved on", async () => {

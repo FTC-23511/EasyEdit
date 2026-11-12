@@ -82,8 +82,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Read a project",
       description:
-        "Read one project's timeline as text: its format, version, tracks and clips, with times in seconds and in frames and every clip's id. Call this before changing a project, and pass the version it reports as expected_version. Long projects come in pages: pass cursor to read on.",
-      inputSchema: z.object({ project_id: z.string().min(1), cursor: z.number().int().min(0).optional() }),
+        "Read one project's timeline as text: its format, version, tracks and clips, with times in seconds and in frames and every clip's id. Call this before changing a project, and pass the version it reports as expected_version. Long projects come in pages: to read on, pass the cursor and the version that the last line of a page names. If the project changed in between, you are told to start again.",
+      inputSchema: z.object({
+        project_id: z.string().min(1),
+        cursor: z.number().int().min(0).optional(),
+        version: z.number().int().min(0).optional(),
+      }),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     answer("get_project", (input) => getProjectTool(ctx, input)),

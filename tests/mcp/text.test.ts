@@ -41,7 +41,7 @@ describe("projectPage", () => {
     const first = projectPage(project, { maxChars: 60 }); // the first two body lines cost 37, the third would make 62
     expect(first.next).toBe(2);
     expect(first.text.split("\n")).toEqual([NAME, HEAD, 'Track v1 [video] "Video 1"', "  (empty)",
-      '… 6 more lines. Call get_project with project_id "p1" and cursor 2 to read on.']);
+      '… 6 more lines. Call get_project with project_id "p1", cursor 2 and version 4 to read on.']);
     expect(projectPage(project, { cursor: 2, maxChars: 10_000 }).text.split("\n").slice(0, 3)).toEqual([NAME, HEAD, 'Track t1 [text] "Text 1"']);
     expect(projectPage(project, { cursor: 99, maxChars: 100 })).toEqual({ next: null, text: [NAME, HEAD, "(no more lines)"].join("\n") });
   });

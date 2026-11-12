@@ -52,6 +52,11 @@ describe("Claude and the website on one project", () => {
       expect(tools.map((t) => t.name).sort()).toEqual(TOOLS);
       expect(JSON.stringify(tools).length).toBeLessThan(12_000);
       for (const t of tools) expect(t.annotations?.readOnlyHint, t.name).toBe(["get_editing_guide", "get_project", "list_projects"].includes(t.name));
+      const getProject = tools.find((t) => t.name === "get_project");
+      expect(Object.keys(getProject?.inputSchema.properties ?? {}).sort()).toEqual(["cursor", "project_id", "version"]);
+      expect(getProject?.description).toMatch(
+        / Long projects come in pages: to read on, pass the cursor and the version that the last line of a page names\. If the project changed in between, you are told to start again\.$/,
+      );
     } finally {
       await client.close();
     }

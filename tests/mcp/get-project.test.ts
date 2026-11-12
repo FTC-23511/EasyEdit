@@ -36,17 +36,18 @@ Track a1 [audio] "Audio 1"
     }
   });
 
-  it("a 1,000-clip project comes in pages: none over the limit, no clip missed, each with the head", async () => {
+  it("a 1,000-clip project comes in pages: none over the limit, each clip exactly once, each with the head", async () => {
     const db = await makeTestDb();
     const ctx = await toolContext(db);
     const { id } = await createProject(db, grace, { name: "Long one", format: "long_16x9" });
     const version = await fillWithText(db, grace, id, 1000);
 
-    const seen = new Set<string>();
+    const seen: string[] = [];
     let cursor: number | undefined;
+    let pageVersion: number | undefined;
     let pages = 0;
     do {
-      const r = await getProjectTool(ctx, { project_id: id, cursor });
+      const r = await getProjectTool(ctx, { project_id: id, cursor, version: pageVersion });
       expect(r.isError).toBe(false);
       expect(r.text.length).toBeLessThanOrEqual(LIMITS.connectorReadChars + 400); // the name, head and footer lines ride on top
       const lines = r.text.split("\n");
@@ -54,15 +55,49 @@ Track a1 [audio] "Audio 1"
       expect(lines[1]).toContain(`· version ${version}`);
       for (const line of lines) {
         const clip = /^ {2}(k\d+) {2}text /.exec(line);
-        if (clip) seen.add(clip[1]);
+        if (clip) seen.push(clip[1]);
       }
-      const more = /and cursor (\d+) to read on\.$/.exec(lines.at(-1)!);
+      const more = /, cursor (\d+) and version (\d+) to read on\.$/.exec(lines.at(-1)!);
       cursor = more ? Number(more[1]) : undefined;
+      pageVersion = more ? Number(more[2]) : undefined;
+      if (more) expect(pageVersion).toBe(version);
       pages++;
     } while (cursor !== undefined && pages < 50);
 
     expect(pages).toBeGreaterThan(3);
-    expect(seen.size).toBe(1000);
-    expect((await getProjectTool(ctx, { project_id: id, cursor: 5000 })).text.split("\n").at(-1)).toBe("(no more lines)");
+    expect(seen).toHaveLength(1000);
+    expect(new Set(seen).size).toBe(1000);
+    expect((await getProjectTool(ctx, { project_id: id, cursor: 5000, version })).text.split("\n").at(-1)).toBe("(no more lines)");
+  });
+
+  it("refuses the next page when the project changed between two pages", async () => {
+    const db = await makeTestDb();
+    const ctx = await toolContext(db);
+    const { id } = await createProject(db, grace, { name: "Long one", format: "long_16x9" });
+    const version = await fillWithText(db, grace, id, 300);
+    const first = (await getProjectTool(ctx, { project_id: id })).text.split("\n");
+    const more = /, cursor (\d+) and version (\d+) to read on\.$/.exec(first.at(-1)!)!;
+    expect(Number(more[2])).toBe(version);
+
+    await applyProjectOps(db, grace, { projectId: id, baseVersion: version, ops: [{ op: "remove_clip", clipId: "k0" }, { op: "remove_clip", clipId: "k1" }] });
+    expect(await getProjectTool(ctx, { project_id: id, cursor: Number(more[1]), version })).toEqual({
+      isError: true,
+      text: `The project changed to version ${version + 1} while you were reading. Read it again from the start, without a cursor.`,
+    });
+  });
+
+  it("refuses a cursor without the version it came from, and ignores a version without a cursor", async () => {
+    const db = await makeTestDb();
+    const ctx = await toolContext(db);
+    const { id } = await createProject(db, grace, { name: "Long one", format: "long_16x9" });
+    const version = await fillWithText(db, grace, id, 300);
+    expect(await getProjectTool(ctx, { project_id: id, cursor: 40 })).toEqual({
+      isError: true,
+      text: "A cursor needs the version it came from. Read the project again from the start, without a cursor.",
+    });
+    const whole = await getProjectTool(ctx, { project_id: id });
+    expect(await getProjectTool(ctx, { project_id: id, cursor: 0 })).toEqual(whole);
+    expect(await getProjectTool(ctx, { project_id: id, cursor: 0, version: version + 7 })).toEqual(whole);
+    expect(await getProjectTool(ctx, { project_id: id, version: version + 7 })).toEqual(whole);
   });
 });
