@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { rowsOf, type DB } from "@/db";
 import { removeEntry, setRole } from "@/lib/allowlist/service";
 import { refusalResponse, resolveConnectorCaller } from "@/lib/connector/caller";
@@ -119,5 +119,57 @@ describe("who is calling", () => {
     expect(await count("session", c.userId)).toBe(0);
     expect(await who(c)).toMatchObject({ ok: true, user: { id: c.userId } });
     expect((await refresh(c)).status).toBe(200);
+  });
+});
+
+describe("a token from before a disconnect", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // Only the clock the code reads moves; the database and the test runner keep real time.
+  const setClock = (at: Date) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at);
+  };
+  const tools = (c: { accessToken: string }) => app.rpc(c.accessToken, "tools/list");
+
+  it("stays refused after the member connects again through the same app", async () => {
+    const start = new Date(Math.floor(Date.now() / 1000) * 1000);
+    setClock(start);
+    const before = await app.connect("joan@gmail.com");
+    expect((await tools(before)).status).toBe(200);
+    await revokeAccess(app.db, { userId: before.userId }, { sessions: false });
+    expect(await who(before)).toEqual({ ok: false, reason: "revoked" });
+
+    setClock(new Date(start.getTime() + 60_000));
+    const after = await app.connect("joan@gmail.com", "editor", { clientId: before.clientId });
+    expect(claimsOf(after.accessToken).azp).toBe(before.clientId);
+
+    expect(await who(before)).toEqual({ ok: false, reason: "revoked" });
+    expect((await tools(before)).status).toBe(401);
+    expect(await who(after)).toMatchObject({ ok: true, user: { id: after.userId } });
+    expect((await tools(after)).status).toBe(200);
+  });
+
+  it("a token issued in the same second as its grant passes, one from the second before does not", async () => {
+    const c = await app.connect("frances@gmail.com");
+    const iat = claimsOf(c.accessToken).iat as number;
+    const setGrantTime = (seconds: number) =>
+      app.db.execute(sql`update oauth_consent set created_at = ${new Date(seconds * 1000).toISOString()} where user_id = ${c.userId}`);
+
+    await setGrantTime(iat);
+    expect(await who(c)).toMatchObject({ ok: true });
+    expect((await tools(c)).status).toBe(200);
+    await setGrantTime(iat + 1);
+    expect(await who(c)).toEqual({ ok: false, reason: "revoked" });
+    expect((await tools(c)).status).toBe(401);
+  });
+
+  it("a token with no usable issue time is refused", async () => {
+    const c = await app.connect("mary@gmail.com");
+    const claims = claimsOf(c.accessToken);
+    expect(await resolveConnectorCaller(app.db, claims)).toMatchObject({ ok: true });
+    for (const iat of [undefined, "1700000000", Number.NaN, null]) {
+      expect(await resolveConnectorCaller(app.db, { ...claims, iat }), String(iat)).toEqual({ ok: false, reason: "revoked" });
+    }
   });
 });
