@@ -3,7 +3,8 @@ import type { DriveConfig } from "@/lib/drive/config";
 import { SCOPE_READ, SCOPE_WRITE } from "@/lib/drive/token";
 
 // A pretend Google Drive, in memory. It writes down what the real checks showed (drive-facts.md), so a test
-// that passes here says something about the real one. It holds no bytes, only how many arrived.
+// that passes here says something about the real one. It holds no bytes, only how many arrived: a file read
+// back is that many zero bytes.
 
 const TOKEN_HOST = "oauth2.googleapis.com";
 const API_HOST = "www.googleapis.com";
@@ -162,6 +163,9 @@ export function makeFakeDrive(): FakeDrive {
     } else if (method !== "GET") {
       return refusal(404, "notFound");
     }
+    // The file itself and not its facts: as many zero bytes as it has. That the answer says how long it is has
+    // not been seen in a real check; a reader must not depend on it.
+    if (params.get("alt") === "media") return new Response(new Uint8Array(file.sizeBytes), { status: 200, headers: { "Content-Type": file.mimeType, "Content-Length": String(file.sizeBytes) } });
     return Response.json(report(id, params.get("fields")?.split(",") ?? DEFAULT_FIELDS));
   }
 
