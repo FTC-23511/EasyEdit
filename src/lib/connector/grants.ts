@@ -3,8 +3,15 @@ import { rowsOf, type DB } from "@/db";
 
 // Imports only the database, so the allowlist service can call it without a cycle.
 
-// Ends a member's connector access in one statement: their tokens and consent, and their website sessions when asked.
-// Access tokens tied to a refresh token would also go by cascade; deleting them directly covers the rest.
+// The OAuth provider keeps each unexchanged authorization code as a verification row whose value is the JSON text
+// {"type":"authorization_code",...,"userId":...}. Other verification rows need not be JSON, so only a row that starts
+// that way is parsed, and the CASE keeps the parse from running on any other row.
+const isCodeOfTarget = sql`case when starts_with(value, '{"type":"authorization_code",')
+  then (value::jsonb ->> 'userId') in (select id from target) else false end`;
+
+// Ends a member's connector access in one statement: their tokens, consent and unexchanged sign-in codes, and their
+// website sessions when asked. Access tokens tied to a refresh token would also go by cascade; deleting them directly
+// covers the rest.
 export async function revokeAccess(
   db: DB,
   who: { email: string } | { userId: string },
@@ -20,7 +27,8 @@ export async function revokeAccess(
     with target as (${target})${sessions},
       gone_access as (delete from oauth_access_token where user_id in (select id from target)),
       gone_refresh as (delete from oauth_refresh_token where user_id in (select id from target)),
-      gone_consent as (delete from oauth_consent where user_id in (select id from target))
+      gone_consent as (delete from oauth_consent where user_id in (select id from target)),
+      gone_codes as (delete from verification where ${isCodeOfTarget})
     select 1
   `);
 }

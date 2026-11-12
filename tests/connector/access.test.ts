@@ -5,7 +5,7 @@ import { oauthAccessToken } from "@/db/schema";
 import { removeEntry, setRole } from "@/lib/allowlist/service";
 import { refusalResponse, resolveConnectorCaller } from "@/lib/connector/caller";
 import { connectedEmails, revokeAccess } from "@/lib/connector/grants";
-import { BASE_URL, claimsOf, startConnectorApp, type ConnectorApp } from "../helpers/connector";
+import { BASE_URL, CLAUDE_CALLBACK, MCP_URL, claimsOf, startConnectorApp, type ConnectorApp } from "../helpers/connector";
 
 let testDb: DB;
 vi.mock("@/db", async (original) => ({ ...(await original<typeof import("@/db")>()), getDb: () => testDb }));
@@ -202,6 +202,45 @@ describe("ending access", () => {
     await revokeAccess(app.db, { userId: c.userId }, { sessions: false });
 
     expect(rowsOf(await app.db.execute(sql`select 1 from oauth_access_token where id = 'lone-token'`))).toHaveLength(0);
+  });
+
+  it("a sign-in code issued before a disconnect cannot be exchanged after the member connects again", async () => {
+    // A code Claude was sent and has not yet exchanged for a token.
+    const issueCode = async (c: { cookie: string; clientId: string }) => {
+      const { verifier, challenge } = app.pkce();
+      const back = await app.decide({ cookie: c.cookie, consentUrl: await app.authorize({ clientId: c.clientId, cookie: c.cookie, challenge }), accept: true });
+      return { code: back.searchParams.get("code")!, verifier };
+    };
+    const exchange = (c: { clientId: string }, issued: { code: string; verifier: string }) => app.token({
+      grant_type: "authorization_code", code: issued.code, redirect_uri: CLAUDE_CALLBACK, client_id: c.clientId,
+      code_verifier: issued.verifier, resource: MCP_URL,
+    });
+
+    const c = await app.connect("ida@gmail.com");
+    const other = await app.connect("alan@gmail.com", "editor", { clientId: c.clientId });
+    const old = await issueCode(c);
+    const othersCode = await issueCode(other);
+    // Rows the library keeps for other purposes, one of them not JSON at all.
+    await app.db.execute(sql`
+      insert into verification (id, identifier, value, expires_at)
+      values ('plain', 'plain', 'not json', now() + interval '1 hour'),
+             ('state', 'state', ${JSON.stringify({ type: "state", userId: c.userId })}, now() + interval '1 hour')`);
+
+    // Twice: ending access again is harmless.
+    await revokeAccess(app.db, { email: "ida@gmail.com" }, { sessions: false });
+    await revokeAccess(app.db, { email: "ida@gmail.com" }, { sessions: false });
+    expect(rowsOf(await app.db.execute(sql`select id from verification where id in ('plain', 'state')`))).toHaveLength(2);
+    await app.connect("ida@gmail.com", "editor", { clientId: c.clientId });
+
+    const refused = await exchange(c, old);
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toBe("invalid_grant");
+    const fresh = await exchange(c, await issueCode(c));
+    expect(fresh.status).toBe(200);
+    const { access_token: accessToken } = (await fresh.json()) as { access_token: string };
+    expect(await who({ accessToken })).toMatchObject({ ok: true, user: { id: c.userId } });
+    // Another member's code is untouched.
+    expect((await exchange(other, othersCode)).status).toBe(200);
   });
 
   it("is one statement: the production driver cannot run transactions", async () => {
