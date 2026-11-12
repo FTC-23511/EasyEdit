@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { rowsOf, type DB } from "@/db";
+import { oauthAccessToken } from "@/db/schema";
 import { removeEntry, setRole } from "@/lib/allowlist/service";
 import { refusalResponse, resolveConnectorCaller } from "@/lib/connector/caller";
 import { connectedEmails, revokeAccess } from "@/lib/connector/grants";
@@ -189,5 +190,33 @@ describe("ending access", () => {
     for (const table of ["session", "oauth_access_token", "oauth_refresh_token", "oauth_consent"] as const) {
       expect(await count(table, c.userId), table).toBe(0);
     }
+  });
+
+  it("deletes a stored access token that has no refresh token", async () => {
+    const c = await app.connect("chien@gmail.com");
+    await app.db.insert(oauthAccessToken).values({
+      id: "lone-token", token: "lone-token-value", clientId: c.clientId, userId: c.userId, refreshId: null,
+      expiresAt: new Date(Date.now() + 3_600_000), createdAt: new Date(), scopes: ["offline_access"],
+    });
+
+    await revokeAccess(app.db, { userId: c.userId }, { sessions: false });
+
+    expect(rowsOf(await app.db.execute(sql`select 1 from oauth_access_token where id = 'lone-token'`))).toHaveLength(0);
+  });
+
+  it("is one statement: the production driver cannot run transactions", async () => {
+    const c = await app.connect("hopper@gmail.com");
+    const execute = vi.spyOn(app.db, "execute");
+    const transaction = vi.spyOn(app.db, "transaction");
+    try {
+      await revokeAccess(app.db, { userId: c.userId }, { sessions: true });
+      await revokeAccess(app.db, { email: "hopper@gmail.com" }, { sessions: false });
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(transaction).not.toHaveBeenCalled();
+    } finally {
+      execute.mockRestore();
+      transaction.mockRestore();
+    }
+    expect(await count("session", c.userId)).toBe(0);
   });
 });
