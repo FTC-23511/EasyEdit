@@ -173,3 +173,21 @@ describe("a token from before a disconnect", () => {
     }
   });
 });
+
+describe("ending access", () => {
+  it("removing a member again finishes a revoke that failed after the allowlist row was deleted", async () => {
+    // Without a resource the access token is stored too, so all four tables hold a row.
+    const c = await app.connect("rosalind@gmail.com", "editor", { resource: null });
+    // As if the first statement of removeEntry landed and the second failed.
+    await app.db.execute(sql`delete from allowlist where email = 'rosalind@gmail.com'`);
+    for (const table of ["session", "oauth_access_token", "oauth_refresh_token", "oauth_consent"] as const) {
+      expect(await count(table, c.userId), table).toBeGreaterThan(0);
+    }
+
+    await removeEntry(app.db, "rosalind@gmail.com");
+
+    for (const table of ["session", "oauth_access_token", "oauth_refresh_token", "oauth_consent"] as const) {
+      expect(await count(table, c.userId), table).toBe(0);
+    }
+  });
+});

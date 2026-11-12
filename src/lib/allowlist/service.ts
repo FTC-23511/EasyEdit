@@ -106,6 +106,8 @@ export async function removeEntry(db: DB, email: string): Promise<void> {
   `);
   if (rowsOf(result).length === 0) {
     if ((await getRole(db, target)) !== null) throw lastAdminError();
+    // Already off the list. Revoking again finishes the job if an earlier removal failed after its first statement.
+    await revokeAccess(db, { email: target }, { sessions: true });
     return;
   }
   // A second statement: the allowlist check on every request covers the moment between the two.
