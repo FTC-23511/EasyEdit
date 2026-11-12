@@ -280,6 +280,38 @@ describe("the media API", () => {
     }
   });
 
+  it("a file Drive would not move to the trash is the same one line, and the member is not told", async () => {
+    const ctx = await mediaContext();
+    const api = handlersFor(ctx, ctx.ada);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const asset = await readyAsset(ctx);
+    const kept = await readyAsset(ctx, ctx.ada, { ...VIDEO, fileName: "kept.mov" });
+    const sendPreview = async (assetId: string) => {
+      const path = `/api/media/${assetId}/files`;
+      const opened = await answer(await api.openFile(post(path, { role: "preview", sizeBytes: 2_000_000 }), at(assetId)));
+      await sendAll(ctx.fake, (opened.body as { uploadUrl: string }).uploadUrl, 2_000_000);
+      return answer(await api.completeFile(post(`${path}/complete`, { role: "preview" }), at(assetId)));
+    };
+
+    // A preview copy that replaces another: the old one stays in Drive, and the answer is the new one.
+    await sendPreview(kept.id);
+    expect(log.mock.calls).toEqual([]);
+    ctx.fake.failNext(/PATCH/, 500, "backendError");
+    expect(await sendPreview(kept.id)).toMatchObject({ status: 200, body: { asset: { previewStatus: "ready" } } });
+    expect(log.mock.calls).toEqual([["Drive call failed", "trash", 500, "backendError"]]);
+
+    // A removal: the file stays in Drive, and the asset is removed.
+    log.mockClear();
+    ctx.fake.failNext(/PATCH/, 403, "insufficientFilePermissions");
+    const removed = await api.remove(request("DELETE", `/api/media/${asset.id}`), at(asset.id));
+    expect(removed.status).toBe(204);
+    expect(await removed.text()).toBe("");
+    expect(ctx.fake.files.get(asset.originalFileId!)!.trashed).toBe(false);
+    expect(log.mock.calls).toEqual([["Drive call failed", "trash", 403, "insufficientFilePermissions"]]);
+    const listed = (await answer(await api.list(request("GET")))).body as { assets: { id: string }[] };
+    expect(listed.assets.map((item) => item.id)).toEqual([kept.id]);
+  });
+
   it("a failure that is not Drive's is still a 500", async () => {
     const ctx = await mediaContext();
     const log = vi.spyOn(console, "error").mockImplementation(() => {});

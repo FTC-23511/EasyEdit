@@ -14,7 +14,8 @@ import { FILE_REFUSALS, MEDIA_MESSAGES, NAMED_PROJECTS } from "./messages";
 import { checkFile, cleanName, driveName, probeFits } from "./rules";
 import type { AssetKind, AssetView, OpenUploadInput } from "./types";
 
-export type MediaDeps = { db: DB; drive: DriveClient; origin: string };
+// onDriveError: told of each Drive failure that the member is not shown. The service itself prints nothing.
+export type MediaDeps = { db: DB; drive: DriveClient; origin: string; onDriveError?: (error: DriveError) => void };
 export type OpenedUpload = { asset: AssetView; uploadUrl: string; offset: number };
 
 type AssetRow = typeof assets.$inferSelect;
@@ -325,14 +326,23 @@ const usedBy = (assetId: string) =>
     sql`jsonb_path_exists(${projects.doc}, '$.tracks[*].clips[*] ? (@.assetId == $id)', jsonb_build_object('id', ${assetId}::text))`,
   );
 
-// Moves files to the trash. What the member asked for is done by then, so a Drive failure here is not shown.
-async function trashQuietly(drive: DriveClient, fileIds: (string | null)[]): Promise<void> {
-  await Promise.allSettled(fileIds.filter((id) => id !== null).map((id) => drive.trashFile(id)));
+// Moves files to the trash, each on its own. What the member asked for is done by then, so a Drive failure here
+// is not shown to them. It is reported instead: that report is the only record that the file is still in Drive.
+// A failure that is not Drive's answer is not hidden: it is thrown once every file has been tried.
+async function trashQuietly(deps: MediaDeps, fileIds: (string | null)[]): Promise<void> {
+  const tried = await Promise.allSettled(fileIds.filter((id) => id !== null).map((id) => deps.drive.trashFile(id)));
+  const failures = tried.flatMap((result) => (result.status === "rejected" ? [result.reason as unknown] : []));
+  const others: unknown[] = [];
+  for (const failure of failures) {
+    if (failure instanceof DriveError) deps.onDriveError?.(failure);
+    else others.push(failure);
+  }
+  if (others.length > 0) throw others[0];
 }
 
 export async function removeAsset(deps: MediaDeps, actor: Actor, assetId: string): Promise<void> {
   requireRole(actor, "editor");
-  const { db, drive } = deps;
+  const { db } = deps;
 
   // An unfinished upload is canceled by its uploader or an admin. Its row goes; nothing is in Drive yet.
   const mayCancel = meetsRole(actor.role, "admin") ? unfinished : unfinishedOf(actor);
@@ -351,7 +361,7 @@ export async function removeAsset(deps: MediaDeps, actor: Actor, assetId: string
       returning drive_file_id, preview_file_id, poster_file_id
     `),
   );
-  if (marked.length > 0) return trashQuietly(drive, Object.values(marked[0]));
+  if (marked.length > 0) return trashQuietly(deps, Object.values(marked[0]));
 
   // Nothing was marked. Why not?
   const [row] = await db.select().from(assets).where(eq(assets.id, assetId));
@@ -458,7 +468,7 @@ export async function completeAssetFile(deps: MediaDeps, actor: Actor, assetId: 
     await libraryAsset(db, actor, row.id); // gone, when it was removed while Drive was being asked
     throw notFinished(); // or a newer file took this one's place
   }
-  await trashQuietly(drive, [row[file.column]]); // the file that was there before
+  await trashQuietly(deps, [row[file.column]]); // the file that was there before
   return viewOf(db, moved);
 }
 

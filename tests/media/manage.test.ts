@@ -2,6 +2,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { rowsOf, type DB } from "@/db";
 import type { Actor } from "@/lib/actor";
+import { DriveError } from "@/lib/drive/token";
 import { LIMITS } from "@/lib/limits";
 import { completeAssetFile, failPreview, listAssets, loadAssetFacts, openAssetFile, openUpload, removeAsset, updateAsset, type AssetFileRole } from "@/lib/media/service";
 import { applyProjectOps, createProject, deleteProject, getProject } from "@/lib/projects/service";
@@ -37,6 +38,16 @@ const assetCount = async (ctx: MediaContext) => (await rows<{ n: number }>(ctx, 
 const trashCalls = (ctx: MediaContext) => ctx.fake.calls.filter((call) => call.method === "PATCH").length;
 const isTrashed = (ctx: MediaContext, fileId: string | null) => ctx.fake.files.get(fileId ?? "")?.trashed;
 const viewOf = async (ctx: MediaContext, id: string, actor: Actor = ctx.ada) => (await listAssets(ctx.db, actor, { ids: [id] }))[0];
+
+// Writes down every Drive failure the service reports from here on: the call, the status and the short code of each.
+function reportedBy(ctx: MediaContext): [string, number, string][] {
+  const reported: [string, number, string][] = [];
+  ctx.deps.onDriveError = (error) => {
+    expect(error).toBeInstanceOf(DriveError);
+    reported.push([error.call, error.status, error.reason]);
+  };
+  return reported;
+}
 
 async function projectUsing(ctx: MediaContext, name: string, assetId: string) {
   const { id } = await createProject(ctx.db, ctx.ada, { name, format: "short_9x16" });
@@ -274,12 +285,50 @@ describe("removing an asset", () => {
     expect((await viewOf(ctx, asset.id)).removed).toBe(true);
     // One file that could not be trashed does not keep the other two.
     expect([asset.originalFileId, preview.fileId, poster.fileId].map((fileId) => isTrashed(ctx, fileId)).sort()).toEqual([false, true, true]);
+  });
 
-    // Nor does a Drive that cannot be reached at all.
+  it("reports each file that Drive would not move to the trash, and removes the asset all the same", async () => {
+    const ctx = await mediaContext();
+    const asset = await readyAsset(ctx);
+    const preview = await sendFile(ctx, asset.id, "preview");
+    const poster = await sendFile(ctx, asset.id, "poster");
+    const reported = reportedBy(ctx);
+    ctx.fake.failNext(/PATCH/, 403, "insufficientFilePermissions");
+    ctx.fake.failNext(/PATCH/, 500);
+    await expect(removeAsset(ctx.deps, ctx.ada, asset.id)).resolves.toBeUndefined();
+    expect((await viewOf(ctx, asset.id)).removed).toBe(true);
+    // One report for each file that was left in Drive, and none for the one that went.
+    expect(reported.sort()).toEqual([
+      ["trash", 403, "insufficientFilePermissions"],
+      ["trash", 500, "unknown"],
+    ]);
+    expect([asset.originalFileId, preview.fileId, poster.fileId].map((fileId) => isTrashed(ctx, fileId)).sort()).toEqual([false, false, true]);
+
+    // Nothing is reported when the file reaches the trash, or when Drive says it is gone already.
     const second = await readyAsset(ctx, ctx.ada, IMAGE);
-    const drive = { ...ctx.deps.drive, trashFile: () => Promise.reject(new TypeError("fetch failed")) };
-    await expect(removeAsset({ ...ctx.deps, drive }, ctx.ada, second.id)).resolves.toBeUndefined();
-    expect((await viewOf(ctx, second.id)).removed).toBe(true);
+    const third = await readyAsset(ctx, ctx.ada, AUDIO);
+    await removeAsset(ctx.deps, ctx.ada, second.id);
+    ctx.fake.failNext(/PATCH/, 404, "notFound");
+    await removeAsset(ctx.deps, ctx.ada, third.id);
+    expect(reported).toHaveLength(2);
+  });
+
+  it("does not hide a failure that is not Drive's answer", async () => {
+    const ctx = await mediaContext();
+    const asset = await readyAsset(ctx);
+    const preview = await sendFile(ctx, asset.id, "preview");
+    const poster = await sendFile(ctx, asset.id, "poster");
+    const reported = reportedBy(ctx);
+    // The call for the original breaks before Drive answers, and Drive refuses one of the other two.
+    const broken = new TypeError("fetch failed");
+    const trashFile = (id: string) => (id === asset.originalFileId ? Promise.reject(broken) : ctx.deps.drive.trashFile(id));
+    ctx.fake.failNext(/PATCH/, 500);
+    await expect(removeAsset({ ...ctx.deps, drive: { ...ctx.deps.drive, trashFile } }, ctx.ada, asset.id)).rejects.toBe(broken);
+    // The asset is removed either way, the other files were still tried, and Drive's refusal was still reported.
+    expect((await viewOf(ctx, asset.id)).removed).toBe(true);
+    expect(trashCalls(ctx)).toBe(2);
+    expect([preview.fileId, poster.fileId].map((fileId) => isTrashed(ctx, fileId)).sort()).toEqual([false, true]);
+    expect(reported).toEqual([["trash", 500, "unknown"]]);
   });
 
   it("cancels an unfinished upload", async () => {
@@ -398,10 +447,22 @@ describe("the preview copy's and the still picture's files", () => {
     const ctx = await mediaContext();
     const asset = await readyAsset(ctx);
     const first = await sendFile(ctx, asset.id, "preview");
-    ctx.fake.failNext(/PATCH/, 500);
+    const reported = reportedBy(ctx);
+    ctx.fake.failNext(/PATCH/, 500, "backendError");
     const second = await sendFile(ctx, asset.id, "preview");
     expect(second.view).toMatchObject({ previewStatus: "ready", previewFileId: second.fileId });
     expect(isTrashed(ctx, first.fileId)).toBe(false);
+    // The row no longer names the old copy, so the report is the only record that it is still in Drive.
+    expect(reported).toEqual([["trash", 500, "backendError"]]);
+
+    // A failure that is not Drive's answer is not hidden, and the new copy is in all the same.
+    const { uploadUrl } = await openAssetFile(ctx.deps, ctx.ada, asset.id, { role: "preview", sizeBytes: 3_000_000 });
+    await sendAll(ctx.fake, uploadUrl, 3_000_000);
+    const broken = new TypeError("fetch failed");
+    const drive = { ...ctx.deps.drive, trashFile: () => Promise.reject(broken) };
+    await expect(completeAssetFile({ ...ctx.deps, drive }, ctx.ada, asset.id, "preview")).rejects.toBe(broken);
+    expect(await viewOf(ctx, asset.id)).toMatchObject({ previewStatus: "ready", previewFileId: ctx.fake.sessions.get(uploadUrl)!.fileId });
+    expect(reported).toHaveLength(1);
   });
 
   it("opening again replaces the file that was on its way", async () => {

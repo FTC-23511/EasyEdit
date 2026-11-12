@@ -97,9 +97,12 @@ function idsOf(req: Request): string[] | undefined {
 
 const notSetUp = () => Response.json(NOT_SET_UP_BODY, { status: 503 });
 
+// The one line a failed Drive call leaves: which call, the status and Google's short code, which is all a DriveError holds.
+const logDriveError = (error: DriveError) => console.error("Drive call failed", error.call, error.status, error.reason);
+
 // What every route does around its own work. `apiRoute` refuses a write from another site and answers what the
 // service refuses. Then the member is looked up, before anything else is read. And a failed Drive call is answered
-// 502 with one line logged: which call, the status and Google's short code, which is all a DriveError holds.
+// 502 with that one line logged.
 function mediaRoute<Rest extends unknown[]>(deps: MediaHandlerDeps, handler: (actor: Actor, req: Request, ...rest: Rest) => Promise<Response>) {
   return apiRoute(async (req: Request, ...rest: Rest): Promise<Response> => {
     const user = await deps.auth(req);
@@ -108,17 +111,18 @@ function mediaRoute<Rest extends unknown[]>(deps: MediaHandlerDeps, handler: (ac
       return await handler(actorFrom(user), req, ...rest);
     } catch (error) {
       if (!(error instanceof DriveError)) throw error;
-      console.error("Drive call failed", error.call, error.status, error.reason);
+      logDriveError(error);
       return Response.json(STORAGE_DOWN_BODY, { status: 502 });
     }
   });
 }
 
 export function makeMediaHandlers(deps: MediaHandlerDeps) {
-  // What the service needs to reach Drive. Null when media is not set up.
+  // What the service needs to reach Drive. Null when media is not set up. A Drive failure the member is not shown
+  // (a file that could not be moved to the trash) leaves the same one line.
   const media = (): MediaDeps | null => {
     const drive = deps.drive();
-    return drive ? { db: deps.db(), drive, origin: deps.origin() } : null;
+    return drive ? { db: deps.db(), drive, origin: deps.origin(), onDriveError: logDriveError } : null;
   };
 
   return {
