@@ -447,6 +447,31 @@ describe("several uploads", () => {
     expect(h.queue.items().map(outcome)).toEqual([{ stage: "done", message: null, canRetry: false }]);
     expect(h.derives.map((derive) => derive.signal.aborted)).toEqual([true, false]);
   });
+
+  it("a preview copy given up while it waits its turn does not let the one behind it start early", async () => {
+    const held = gate();
+    let running = 0;
+    let most = 0;
+    const h = await harness({
+      options: { parallel: 1 }, // so the copies are asked for in the order a, b, c
+      derive: async (file, probe) => {
+        most = Math.max(most, ++running);
+        if ((file as File).name === "a.mov") await held.opened;
+        running -= 1;
+        return madeFrom(probe);
+      },
+    });
+    h.queue.add([videoFile("a.mov", SMALL), videoFile("b.mov", SMALL), videoFile("c.mov", SMALL)]);
+    await until(() => h.queue.items().every((item) => item.stage === "preview"), "every original to be in");
+    h.queue.cancel(h.queue.items()[1].key); // b.mov, whose copy waits behind a.mov's
+    await aWhile();
+    expect(h.derives.map((derive) => derive.fileName)).toEqual(["a.mov"]); // the worker is still busy with a.mov
+    held.open();
+    await settled(h.queue);
+    expect(h.derives.map((derive) => derive.fileName)).toEqual(["a.mov", "c.mov"]); // b.mov's is never started
+    expect(most).toBe(1);
+    expect(h.queue.items().map((item) => [item.fileName, item.stage])).toEqual([["a.mov", "done"], ["c.mov", "done"]]);
+  });
 });
 
 describe("an upload that fails", () => {

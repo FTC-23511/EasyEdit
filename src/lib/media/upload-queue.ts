@@ -132,14 +132,18 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
   // Has the worker make the preview copy and the still picture, once it is done with the file before.
   function startDerive(entry: Entry, probe: AssetProbe) {
     const stop = new AbortController();
-    const made = deriveTurn
+    const before = deriveTurn;
+    const made = before
       .then(() => (stop.signal.aborted ? NOTHING_MADE : ingest.derive(entry.file, probe, (fraction) => change(entry, { previewFraction: fraction }), stop.signal)))
       .catch(() => NOTHING_MADE);
-    // The next file's turn comes when this one has its answer, or is given up.
-    deriveTurn = new Promise((next) => {
+    // This one is over when it has its answer, or is given up.
+    const over = new Promise<void>((next) => {
       void made.then(() => next());
       stop.signal.addEventListener("abort", () => next(), { once: true });
     });
+    // The next file's turn comes then, and not before this one's own turn has come: one that is given up while it
+    // waits leaves the worker busy with the file before it.
+    deriveTurn = before.then(() => over);
     entry.derive = { made, stop };
   }
 
