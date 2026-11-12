@@ -36,4 +36,5 @@ export const MEDIA_MESSAGES = {
   usedAMomentAgo: "A project was using that file a moment ago. Try again.",
   wrongFileRole: "A preview copy is for a video, and a still picture for a video or an image.",
   badFileSize: "That file is empty or too large.",
+  storageDown: "Google Drive didn't answer. Try again.",
 };
