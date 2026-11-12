@@ -41,9 +41,29 @@ describe("the login page", () => {
 
   it("keeps a signed-in member on the page while connecting Claude, and says so", async () => {
     vi.mocked(getCurrentUser).mockResolvedValue(ada);
+    vi.mocked(readConsentRequest).mockResolvedValue({ ok: true, view: { clientName: "Claude", verifiedHost: "claude.ai" } });
     await show(LoginPage, signedRequest);
     expect(screen.getByText("Sign in to connect Claude.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign in with Google" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(vi.mocked(readConsentRequest)).toHaveBeenCalledWith(expect.anything(), "test-secret", signedRequest);
+  });
+
+  it("says so when the connect request has expired or was changed", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(null);
+    vi.mocked(readConsentRequest).mockResolvedValue({ ok: false });
+    await show(LoginPage, signedRequest);
+    expect(screen.getByRole("alert").textContent).toBe("This connection request has expired. Go back to Claude and connect again.");
+    expect(screen.getByRole("alert").className).toContain("text-red-800");
+    expect(screen.queryByText("Sign in to connect Claude.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in with Google" })).toBeTruthy();
+  });
+
+  it("checks no connect request on a plain visit", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue(null);
+    await show(LoginPage, {});
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(vi.mocked(readConsentRequest)).not.toHaveBeenCalled();
   });
 });
 
