@@ -4,6 +4,8 @@ import { rowsOf, type DB } from "@/db";
 import { projectOps, projects } from "@/db/schema";
 import { requireRole, type Actor } from "@/lib/actor";
 import { LIMITS } from "@/lib/limits";
+import { assetIdsToCheck, findMediaProblem, mediaProblemMessage } from "@/lib/media/refs";
+import { loadAssetFacts } from "@/lib/media/service";
 import { copyName, createProjectInput, projectName } from "@/lib/projects/schemas";
 import { ServiceError } from "@/lib/service-error";
 import {
@@ -236,6 +238,16 @@ export async function applyProjectOps(
     } catch (error) {
       if (error instanceof OpError) throw rejected(error);
       throw error;
+    }
+    // A clip that was added, pointed at another asset, trimmed or re-timed is checked against the library, as
+    // it is in the doc this write would produce. A change that touches no media makes no query.
+    const assetIds = assetIdsToCheck(doc, ops);
+    if (assetIds.length > 0) {
+      const problem = findMediaProblem(doc, ops, await loadAssetFacts(db, assetIds));
+      if (problem) {
+        const code = problem.code === "past_end" ? "TRIM_OUT_OF_RANGE" : "INVALID";
+        throw new ServiceError(code, 400, mediaProblemMessage(problem, ops), { opIndex: problem.opIndex });
+      }
     }
     if (jsonBytes(doc) > LIMITS.docBytes) {
       throw new ServiceError("LIMIT_EXCEEDED", 400, `A project can be at most ${LIMITS.docBytes / 1024 / 1024} MB`);

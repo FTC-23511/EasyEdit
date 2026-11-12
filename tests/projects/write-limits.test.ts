@@ -4,6 +4,7 @@ import type { Actor } from "@/lib/actor";
 import { applyProjectOps, createProject, getProject } from "@/lib/projects/service";
 import { DEFAULT_TRANSFORM, type Clip, type OpInput } from "@/lib/timeline";
 import { makeTestDb } from "../helpers/db";
+import { insertAsset } from "../media/context";
 
 const editor: Actor = { userId: "u1", email: "u1@gmail.com", role: "editor" };
 
@@ -18,6 +19,7 @@ const doc = async (db: DB, id: string) => (await getProject(db, editor, id))!.do
 // Version 1: v1 [c1 0-30 (in 10, speed 1.5), c2 30-60, c3 60-90], o1 (empty overlay), t1 [x1 0-60].
 async function seeded(db: DB): Promise<string> {
   const { id } = await createProject(db, editor, { name: "P", format: "short_9x16" });
+  await insertAsset(db, { id: "a", durationMs: 40_000 }); // 1,200 frames at 30 fps
   await applyProjectOps(db, editor, {
     projectId: id,
     baseVersion: 0,
@@ -73,6 +75,7 @@ describe("every accepted change can be undone in one request", () => {
 
   async function oneLongClip(db: DB): Promise<string> {
     const { id } = await createProject(db, editor, { name: "P", format: "short_9x16" });
+    await insertAsset(db, { id: "a", durationMs: 40_000 });
     await applyProjectOps(db, editor, { projectId: id, baseVersion: 0, ops: [{ op: "add_clip", trackId: "v1", clip: video("s0", 0, 1000) }] });
     return id;
   }

@@ -1,5 +1,6 @@
+import { nanoid } from "nanoid";
 import type { DB } from "@/db";
-import { user } from "@/db/schema";
+import { assets, user } from "@/db/schema";
 import type { Actor } from "@/lib/actor";
 import { createDriveClient } from "@/lib/drive/client";
 import { LIMITS } from "@/lib/limits";
@@ -71,3 +72,14 @@ export async function readyAsset(ctx: MediaContext, actor: Actor = ctx.ada, inpu
 export const CLIP_TRANSFORM = { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, fit: "cover" };
 // A video clip that names an asset, as an add_clip op carries it.
 export const mediaClip = (assetId: string, over: Record<string, unknown> = {}) => ({ type: "video", assetId, start: 0, duration: 90, in: 0, speed: 1, volume: 1, transform: CLIP_TRANSFORM, ...over });
+
+// A ready asset row written straight to the database, for tests that need an asset and no Drive. Defaults: a 12.5 s video named "IMG_4821", uploaded by "u1".
+export async function insertAsset(db: DB, over: Partial<typeof assets.$inferInsert> = {}): Promise<string> {
+  const id = over.id ?? nanoid(12);
+  await db.insert(assets).values({
+    kind: "video", name: "IMG_4821", fileName: "IMG_4821.MOV", mimeType: "video/quicktime", sizeBytes: 20_000_000, lastModifiedMs: 1_762_800_000_000,
+    status: "ready", driveFileId: `drive-${id}`, durationMs: 12_500, width: 1080, height: 1920, fps: 30, hasAudio: true, videoCodec: "hevc",
+    previewStatus: "pending", uploadedBy: "u1", readyAt: new Date(), ...over, id,
+  });
+  return id;
+}
