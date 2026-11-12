@@ -1,5 +1,5 @@
 import type { DriveConfig } from "./config";
-import { DriveError, type GoogleToken, SCOPE_READ, SCOPE_WRITE, createTokenSource, refusalReason } from "./token";
+import { DriveError, type GoogleToken, SCOPE_READ, SCOPE_WRITE, createTokenSource, reach, refusalReason } from "./token";
 
 const API = "https://www.googleapis.com";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -44,10 +44,10 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
   const tokens = createTokenSource({ clientEmail, privateKey, fetch: deps.fetch, now: deps.now });
   const folders = new Map<DriveFolder, Promise<string>>();
 
-  // One request to the Drive API, with the token that can change files.
-  async function send(path: string, init: { method?: string; headers?: Record<string, string>; json?: object } = {}): Promise<Response> {
+  // One request to the Drive API, with the token that can change files. `call` names it in the error when Drive gives no answer.
+  async function send(call: string, path: string, init: { method?: string; headers?: Record<string, string>; json?: object } = {}): Promise<Response> {
     const { accessToken } = await tokens.tokenFor(SCOPE_WRITE);
-    return fetchFn(`${API}${path}`, {
+    return reach(fetchFn, call, `${API}${path}`, {
       method: init.method ?? "GET",
       headers: { Authorization: `Bearer ${accessToken}`, ...init.headers, ...(init.json ? { "Content-Type": JSON_TYPE } : {}) },
       body: init.json ? JSON.stringify(init.json) : undefined,
@@ -57,7 +57,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
   async function findOrMakeFolder(name: DriveFolder): Promise<string> {
     const q = `name = '${name}' and mimeType = '${FOLDER_MIME}' and '${rootFolderId}' in parents and trashed = false`;
     // Oldest first: if two were ever made, everyone who looks finds the same one.
-    const listed = await send(`/drive/v3/files?q=${encodeURIComponent(q)}&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=createdTime&fields=files(id)`);
+    const listed = await send("folder", `/drive/v3/files?q=${encodeURIComponent(q)}&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=createdTime&fields=files(id)`);
     if (!listed.ok) throw await refused("folder", listed);
     const { files } = await objectIn(listed);
     if (!Array.isArray(files)) throw new DriveError("folder", listed.status, "unknown"); // not a list: do not take it for an empty one
@@ -66,7 +66,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
       if (!isRecord(first) || !isId(first.id)) throw new DriveError("folder", listed.status, "unknown");
       return first.id;
     }
-    const made = await send("/drive/v3/files?supportsAllDrives=true&fields=id", { method: "POST", json: { name, mimeType: FOLDER_MIME, parents: [rootFolderId] } });
+    const made = await send("folder", "/drive/v3/files?supportsAllDrives=true&fields=id", { method: "POST", json: { name, mimeType: FOLDER_MIME, parents: [rootFolderId] } });
     if (!made.ok) throw await refused("folder", made);
     const { id } = await objectIn(made);
     if (!isId(id)) throw new DriveError("folder", made.status, "unknown");
@@ -87,7 +87,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
     },
 
     async newFileId() {
-      const answer = await send("/drive/v3/files/generateIds?count=1&space=drive&type=files");
+      const answer = await send("ids", "/drive/v3/files/generateIds?count=1&space=drive&type=files");
       if (!answer.ok) throw await refused("ids", answer);
       const { ids } = await objectIn(answer);
       const id: unknown = Array.isArray(ids) ? ids[0] : undefined;
@@ -97,7 +97,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
 
     async openUploadSession({ id, name, parentId, mimeType, sizeBytes, origin }) {
       // Without the page's origin here, the page cannot read Drive's answers to the pieces it sends.
-      const answer = await send("/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true", {
+      const answer = await send("session", "/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true", {
         method: "POST",
         headers: { Origin: origin, "X-Upload-Content-Type": mimeType, "X-Upload-Content-Length": String(sizeBytes) },
         json: { id, name, parents: [parentId], mimeType },
@@ -110,7 +110,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
 
     async uploadOffset(sessionUrl, sizeBytes) {
       // No token: the address is the permission.
-      const answer = await fetchFn(sessionUrl, { method: "PUT", headers: { "Content-Range": `bytes */${sizeBytes}` } });
+      const answer = await reach(fetchFn, "session", sessionUrl, { method: "PUT", headers: { "Content-Range": `bytes */${sizeBytes}` } });
       if (answer.status === 308) {
         const range = answer.headers.get("range");
         if (range === null) return { done: false, offset: 0, fileId: null }; // Drive holds nothing yet
@@ -128,7 +128,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
 
     async getFile(id) {
       if (id === "") return null; // the address without an id is the list of all files
-      const answer = await send(`/drive/v3/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=${FILE_FIELDS}`);
+      const answer = await send("file", `/drive/v3/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=${FILE_FIELDS}`);
       if (answer.status === 404) return null;
       if (!answer.ok) throw await refused("file", answer);
       const file = await objectIn(answer);
@@ -149,7 +149,7 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
     async trashFile(id) {
       if (id === "") return;
       // The folder's member may not delete for good: removing a file means moving it to the trash.
-      const answer = await send(`/drive/v3/files/${encodeURIComponent(id)}?supportsAllDrives=true`, { method: "PATCH", json: { trashed: true } });
+      const answer = await send("trash", `/drive/v3/files/${encodeURIComponent(id)}?supportsAllDrives=true`, { method: "PATCH", json: { trashed: true } });
       if (!answer.ok && answer.status !== 404) throw await refused("trash", answer);
     },
 

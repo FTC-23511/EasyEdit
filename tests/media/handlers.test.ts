@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CurrentUser } from "@/lib/access-rules";
 import type { Actor } from "@/lib/actor";
+import { createDriveClient } from "@/lib/drive/client";
 import { SCOPE_READ } from "@/lib/drive/token";
 import { LIMITS } from "@/lib/limits";
 import { NOT_SET_UP_BODY, STORAGE_DOWN_BODY, makeMediaHandlers, makeReadTokenHandler, type MediaHandlerDeps } from "@/lib/media/handlers";
@@ -278,6 +279,47 @@ describe("the media API", () => {
       expect(await answer(await ask()), call).toEqual(refusedAs(502, STORAGE_DOWN_BODY));
       expect(log.mock.calls, call).toEqual([["Drive call failed", call, status, reason]]);
     }
+  });
+
+  it("a Drive that cannot be reached is the same 502, with one line that says so", async () => {
+    const ctx = await mediaContext();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ready = await readyAsset(ctx);
+    const { asset: unfinished } = await openUpload(ctx.deps, ctx.ada, IMAGE);
+    // The real client, over a connection that fails for the requests `down` names.
+    let down: RegExp | null = null;
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (down?.test(`${init?.method ?? "GET"} ${url.pathname}${url.search}`)) throw new TypeError("fetch failed");
+      return ctx.fake.fetch(input, init);
+    }) as typeof fetch;
+    const drive = createDriveClient({ config: ctx.fake.config, fetch: fetchFn, now: ctx.fake.now });
+    const api = handlersFor(ctx, ctx.ada, { drive: () => drive });
+    const before = await answer(await api.list(request("GET")));
+    const failing: [RegExp, string, () => Promise<Response>][] = [
+      [/POST \/token/, "token", () => api.open(post("/api/media", VIDEO))],
+      [/generateIds/, "ids", () => api.open(post("/api/media", AUDIO))],
+      [/upload_id/, "session", () => api.offset(post(`/api/media/${unfinished.id}/offset`), at(unfinished.id))],
+      [/POST \/token/, "token", () => api.readToken(tokenRequest())],
+    ];
+    for (const [match, call, ask] of failing) {
+      log.mockClear();
+      down = match;
+      const response = await ask();
+      expect(response.headers.get("cache-control"), call).toBeNull();
+      expect(await answer(response), call).toEqual(refusedAs(502, STORAGE_DOWN_BODY));
+      expect(log.mock.calls, call).toEqual([["Drive call failed", call, 0, "unreachable"]]);
+    }
+    down = null;
+    expect(await answer(await api.list(request("GET")))).toEqual(before); // nothing was recorded, and the unfinished upload is kept
+
+    // A file that could not be moved to the trash because Drive was out of reach: the asset is removed all the same.
+    log.mockClear();
+    down = /^PATCH /;
+    const removed = await api.remove(request("DELETE", `/api/media/${ready.id}`), at(ready.id));
+    expect(removed.status).toBe(204);
+    expect(ctx.fake.files.get(ready.originalFileId!)!.trashed).toBe(false);
+    expect(log.mock.calls).toEqual([["Drive call failed", "trash", 0, "unreachable"]]);
   });
 
   it("a file Drive would not move to the trash is the same one line, and the member is not told", async () => {

@@ -209,16 +209,27 @@ describe("the service account's token", () => {
     expect(requests).toHaveLength(10); // none of the nine was remembered
   });
 
-  it("passes on a request that never reached Google, and does not remember it", async () => {
+  it("says Google could not be reached when the request gets no answer, and does not remember it", async () => {
     let down = true;
-    const fetchFn = (async () => {
-      if (down) throw new TypeError("fetch failed");
+    let asked = 0;
+    // What fetch throws can quote what it was sending: here the address and the signed request.
+    const fetchFn = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      asked += 1;
+      if (down) throw Object.assign(new TypeError(`fetch failed: ${String(url)}`), { cause: new Error(`ECONNRESET ${String(init?.body)}`) });
       return Response.json({ access_token: "tok", expires_in: 3600 });
     }) as typeof fetch;
     const tokens = createTokenSource({ clientEmail: EMAIL, privateKey, fetch: fetchFn });
-    await expect(tokens.tokenFor(SCOPE_WRITE)).rejects.toThrow("fetch failed");
+    const [error, shared] = await Promise.all([tokens.tokenFor(SCOPE_WRITE).catch((e) => e), tokens.tokenFor(SCOPE_WRITE).catch((e) => e)]);
+    expect(error).toBeInstanceOf(DriveError);
+    expect(error).toMatchObject({ call: "token", status: 0, reason: "unreachable" }); // no answer, so no status
+    expect(error.message).toBe("Drive call failed: token 0 unreachable");
+    expect(shared).toBe(error);
+    expect(Object.keys(error).sort()).toEqual(["call", "name", "reason", "status"]);
+    expect(inspect(error, { depth: 10 }) + JSON.stringify(error) + error.stack).not.toMatch(/fetch failed|ECONNRESET|googleapis|grant_type|eyJ/);
+    expect(asked).toBe(1);
     down = false;
     expect((await tokens.tokenFor(SCOPE_WRITE)).accessToken).toBe("tok");
+    expect(asked).toBe(2);
   });
 
   it("fails without a request, and without showing the key, when the key cannot sign", async () => {
@@ -227,6 +238,7 @@ describe("the service account's token", () => {
     const tokens = createTokenSource({ clientEmail: EMAIL, privateKey: badKey, fetch: fetchFn });
     const error = await tokens.tokenFor(SCOPE_WRITE).catch((e) => e);
     expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(DriveError); // Google was not asked, so this is not Google being out of reach
     expect(inspect(error, { depth: 10 }) + JSON.stringify(error) + error.stack).not.toContain("SECRETMARKER");
     await expect(tokens.tokenFor(SCOPE_WRITE)).rejects.toBeInstanceOf(Error);
     expect(requests).toHaveLength(0);

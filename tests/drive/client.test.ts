@@ -361,6 +361,59 @@ describe("the Drive client", () => {
     expect(fake.calls.at(-1)!.scope).toBe(SCOPE_READ);
   });
 
+  it("says Drive could not be reached when a request gets no answer, whichever call it was", async () => {
+    let down: RegExp | null = null;
+    // What fetch throws can quote what it was sending: here the request line, a token and a session address.
+    const { fake, drive } = watched((line) => {
+      if (!down?.test(line)) return undefined;
+      throw Object.assign(new TypeError(`fetch failed: ${line} with Bearer ya29.secret`), { cause: new Error(`ECONNRESET ${B}/upload/drive/v3/files?upload_id=abc`) });
+    });
+    const parentId = await drive.folderId("Originals");
+    const id = await drive.newFileId();
+    const session = { id, name: "n", parentId, mimeType: "video/mp4", sizeBytes: MiB, origin: "https://app.test" };
+    const url = await drive.openUploadSession(session);
+    // The request that gets no answer, the call it belongs to, and how many requests Drive answered before it.
+    const calls: [RegExp, string, number, () => Promise<unknown>][] = [
+      [/generateIds/, "ids", 0, () => drive.newFileId()],
+      [/^GET \/drive\/v3\/files\?q=/, "folder", 0, () => drive.folderId("Previews")], // looking for the folder
+      [/^POST \/drive\/v3\/files\?/, "folder", 1, () => drive.folderId("Previews")], // making it
+      [/^POST \/upload\//, "session", 0, () => drive.openUploadSession(session)],
+      [/^PUT \/upload\//, "session", 0, () => drive.uploadOffset(url, MiB)],
+      [/^GET \/drive\/v3\/files\/[^?]+\?/, "file", 0, () => drive.getFile(id)],
+      [/^PATCH /, "trash", 0, () => drive.trashFile(parentId)],
+    ];
+    for (const [match, call, answered, ask] of calls) {
+      const seen = fake.calls.length;
+      down = match;
+      const error = (await ask().catch((e: unknown) => e)) as DriveError;
+      expect(error, call).toBeInstanceOf(DriveError);
+      expect(error, call).toMatchObject({ call, status: 0, reason: "unreachable" }); // no answer, so no status
+      expect(error.message).toBe(`Drive call failed: ${call} 0 unreachable`);
+      expect(Object.keys(error).sort()).toEqual(["call", "name", "reason", "status"]);
+      expect(inspect(error, { depth: 10 }) + JSON.stringify(error) + error.stack, call).not.toMatch(/fetch failed|ECONNRESET|googleapis|upload_id|Bearer|ya29/);
+      down = null;
+      expect(fake.calls.length - seen, call).toBe(answered);
+    }
+    // Nothing of a failure is remembered: each call works once Drive answers again.
+    expect(await drive.folderId("Previews")).toMatch(/\w/);
+    expect(await drive.uploadOffset(url, MiB)).toEqual({ done: false, offset: 0, fileId: null });
+    expect((await drive.getFile(parentId))?.trashed).toBe(false);
+  });
+
+  it("says Google could not be reached when the token request gets no answer", async () => {
+    let down = true;
+    const { fake, drive } = watched((line) => {
+      if (down && line === "POST /token") throw new TypeError("fetch failed");
+      return undefined;
+    });
+    await expect(drive.newFileId()).rejects.toMatchObject({ name: "DriveError", call: "token", status: 0, reason: "unreachable" });
+    await expect(drive.readToken(600)).rejects.toMatchObject({ name: "DriveError", call: "token", status: 0, reason: "unreachable" });
+    expect(fake.calls).toEqual([]);
+    down = false;
+    expect(await drive.newFileId()).toMatch(/^[\w-]{20,}$/);
+    expect((await drive.readToken(600)).accessToken).toMatch(/\w/);
+  });
+
   it("uses the real fetch and the real clock when none is given", async () => {
     const fake = makeFakeDrive();
     vi.stubGlobal("fetch", fake.fetch);

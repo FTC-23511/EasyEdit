@@ -14,8 +14,8 @@ const SHORT_CODE = /^[A-Za-z0-9_]{1,64}$/;
 export class DriveError extends Error {
   name = "DriveError" as const;
   call: string; // "token", "session", "file" …
-  status: number;
-  reason: string; // a short code from Google's answer, else "unknown"
+  status: number; // 0 when Google gave no answer at all
+  reason: string; // a short code from Google's answer, else "unknown"; "unreachable" when it gave none
 
   constructor(call: string, status: number, reason: string) {
     const code = SHORT_CODE.test(reason) ? reason : "unknown";
@@ -42,6 +42,16 @@ export async function refusalReason(response: Response): Promise<string> {
   return isRecord(first) && typeof first.reason === "string" ? first.reason : "unknown";
 }
 
+// One request to Google. When none of it is answered (no connection, a reset, a timeout) there is no status and no
+// code, so the error says 0 and "unreachable". What fetch threw is not kept: it can quote the address it was given.
+export async function reach(fetchFn: typeof fetch, call: string, url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetchFn(url, init);
+  } catch {
+    throw new DriveError(call, 0, "unreachable");
+  }
+}
+
 const base64url = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
 // The request for a token, signed with the service account's key.
@@ -60,7 +70,7 @@ export function createTokenSource(deps: { clientEmail: string; privateKey: strin
 
   async function ask(scope: string): Promise<GoogleToken> {
     const askedAt = now(); // a token's time runs from before the request, so it is never kept too long
-    const response = await fetchFn(TOKEN_URL, {
+    const response = await reach(fetchFn, "token", TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: `grant_type=${GRANT_TYPE}&assertion=${signedRequest(deps.clientEmail, deps.privateKey, scope, askedAt)}`,
