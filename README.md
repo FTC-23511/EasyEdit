@@ -234,7 +234,7 @@ Claude cannot add video, images or audio yet.
 
 **Limits:** through Claude, each member gets 30 changes a minute, 10 MB of change data a day and 50 new projects a day. One page of a read is 16,000 characters; longer projects come in several pages.
 
-**Ending a connection:** the Admin page shows "Connected" next to each member whose Claude is connected. To end a connection, remove the connector in claude.ai, or an admin clicks **Disconnect** next to the member on the Admin page. Removing a member ends it too. Signing out of the website does not end a connection that Claude made with the `offline_access` scope.
+**Ending a connection:** the Admin page shows "Connected" next to each member who has allowed Claude. An admin ends a connection by clicking **Disconnect** next to the member, and removing a member ends it too. Removing the connector in claude.ai stops Claude from using it, but the member stays listed as "Connected" until an admin disconnects them. Signing out of the website does not end a connection.
 
 **Only claude.ai can connect.** Other clients are refused by their callback address. The allowed callback addresses and hosts are in `src/lib/connector/config.ts`.
 
