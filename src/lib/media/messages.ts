@@ -10,8 +10,12 @@ export const FILE_REFUSALS: Record<FileRefusal, string> = {
   unreadable: "This file couldn't be read. It may be damaged.",
 };
 
+// How many of the projects that use an asset are named when it cannot be removed.
+export const NAMED_PROJECTS = 3;
+
 // The other sentences the media library shows. Each part of the library adds its own here.
 export const MEDIA_MESSAGES = {
+  badName: `Enter a name up to ${LIMITS.mediaNameChars} characters.`,
   eventTooLong: `An event name can be up to ${LIMITS.mediaEventChars} characters.`,
   tooManyUnfinished: `You have ${LIMITS.mediaPendingPerMember} unfinished uploads. Finish or cancel one first.`,
   gone: "That file is no longer in the library.",
@@ -20,4 +24,16 @@ export const MEDIA_MESSAGES = {
   wrongFolder: "That file is not in the library's folder.",
   tooManyIds: `Ask for up to ${LIMITS.mediaIdsPerRequest} files at a time.`,
   formerMember: "A former member", // shown as the uploader when that person's account is gone
+  // Why an asset cannot be removed. names: the projects that use it, in the order to show them, of which the
+  // first three are named; total: how many use it.
+  usedIn(names: string[], total: number): string {
+    const named = names.slice(0, NAMED_PROJECTS);
+    const list = named.map((name) => `"${name}"`).join(", ");
+    if (total === 1) return `Used in 1 project: ${list}. Remove it from that project first.`;
+    const more = total > named.length ? ` and ${total - named.length} more` : "";
+    return `Used in ${total} projects: ${list}${more}. Remove it from those projects first.`;
+  },
+  usedAMomentAgo: "A project was using that file a moment ago. Try again.",
+  wrongFileRole: "A preview copy is for a video, and a still picture for a video or an image.",
+  badFileSize: "That file is empty or too large.",
 };

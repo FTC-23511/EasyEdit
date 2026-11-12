@@ -67,3 +67,7 @@ export async function readyAsset(ctx: MediaContext, actor: Actor = ctx.ada, inpu
   if (offset < input.sizeBytes) await sendAll(ctx.fake, uploadUrl, input.sizeBytes, offset);
   return completeUpload(ctx.deps, actor, asset.id);
 }
+
+export const CLIP_TRANSFORM = { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, fit: "cover" };
+// A video clip that names an asset, as an add_clip op carries it.
+export const mediaClip = (assetId: string, over: Record<string, unknown> = {}) => ({ type: "video", assetId, start: 0, duration: 90, in: 0, speed: 1, volume: 1, transform: CLIP_TRANSFORM, ...over });
