@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="darkreader-lock">
+<title>Drive check</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 24px auto; max-width: 720px; padding: 0 16px; color: #1a1a1a; background: #ffffff; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  button { font: inherit; height: 28px; padding: 0 12px; }
+  #status { margin-left: 8px; }
+  pre { background: #f2f2f2; padding: 12px; white-space: pre-wrap; word-break: break-word; min-height: 4em; }
+</style>
+</head>
+<body>
+<h1>Drive check</h1>
+<p>This uploads 64 MiB to a drive-check folder in the media folder, reads it back, and moves everything to the trash. Keep this tab in front until it says it is done. The terminal prints the facts.</p>
+<p><button id="run" type="button">Run check</button><span id="status">Ready.</span></p>
+<pre id="log"></pre>
+<script>
+"use strict";
+// Plain browser code: no package, nothing from the app. It never shows a
+// token or an upload session address; the log holds only statuses and numbers.
+
+const BIG = 67108864; // 64 MiB
+const PIECE = 8388608; // 8 MiB
+const SMALL = 1048576; // 1 MiB
+const NO_ORIGIN_SIZE = 262144; // 256 KiB
+const MIDDLE = 33554432; // where the read in the middle of the large file starts
+const FILES = "https://www.googleapis.com/drive/v3/files/";
+
+const logEl = document.getElementById("log");
+const statusEl = document.getElementById("status");
+const button = document.getElementById("run");
+
+function log(line) {
+  logEl.textContent += line + "\n";
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+// Byte i is i % 251, as the script expects.
+function pattern(size) {
+  const bytes = new Uint8Array(size);
+  for (let i = 0; i < size; i++) bytes[i] = i % 251;
+  return bytes;
+}
+
+function sameBytes(a, b) {
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function rangeEndOf(range) {
+  const match = /^bytes=0-(\d+)$/.exec(range || "");
+  return match ? Number(match[1]) : null;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A call to the script's own server.
+async function local(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`${path.split("/")[1]} answered ${res.status}${json.error ? `: ${json.error}` : ""}`);
+  return json;
+}
+
+// One PUT of bytes [start, end) to a session. An answer the browser will not
+// let the page read (a cross-origin refusal) comes back as readable: false.
+// An abort is thrown.
+async function put(sessionUrl, bytes, start, end, total, signal) {
+  let res;
+  try {
+    res = await fetch(sessionUrl, {
+      method: "PUT",
+      headers: { "Content-Range": `bytes ${start}-${end - 1}/${total}` },
+      body: bytes.subarray(start, end),
+      signal,
+    });
+  } catch (error) {
+    if (error && error.name === "AbortError") throw error;
+    return { readable: false, status: null, range: null, body: null };
+  }
+  const range = res.headers.get("Range");
+  let body = null;
+  if (res.status === 200 || res.status === 201) body = await res.json().catch(() => null);
+  else await res.arrayBuffer().catch(() => null);
+  return { readable: true, status: res.status, range, body };
+}
+
+// Where the upload stands after a piece that ended at `end`: the Range the
+// answer gave when the page can read it, else the end of the piece.
+function nextOffset(answer, end) {
+  const last = rangeEndOf(answer.range);
+  return answer.readable && answer.status === 308 && last !== null ? last + 1 : end;
+}
+
+// A read of a Drive file with the read-only token.
+async function read(fileId, accessToken, range) {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  if (range) headers.Range = range;
+  try {
+    const res = await fetch(`${FILES}${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, { headers });
+    return { status: res.status, bytes: new Uint8Array(await res.arrayBuffer()) };
+  } catch {
+    return { status: null, bytes: null };
+  }
+}
+
+async function check(page) {
+  if (location.hostname !== "localhost") {
+    throw new Error("open this page at http://localhost:3101; Drive answers only that origin");
+  }
+
+  // The large file, in 8 MiB pieces.
+  setStatus("Building 64 MiB of test bytes…");
+  const big = pattern(BIG);
+  const session = await local("/session", { size: BIG, origin: "page" });
+  log("Opened an upload session for the 64 MiB file.");
+  setStatus("Uploading 64 MiB…");
+
+  let sentBytes = 0;
+  let putMs = 0;
+  async function timedPut(start, end, signal) {
+    const t0 = performance.now();
+    const answer = await put(session.sessionUrl, big, start, end, BIG, signal);
+    putMs += performance.now() - t0;
+    sentBytes += end - start;
+    return answer;
+  }
+
+  let answer = await timedPut(0, PIECE);
+  page.firstPiece = {
+    readable: answer.readable,
+    status: answer.status,
+    rangeReadable: answer.range !== null,
+    rangeEnd: rangeEndOf(answer.range),
+  };
+  log(answer.readable
+    ? `Piece 1 answered ${answer.status}; Range ${answer.range === null ? "not readable" : answer.range}.`
+    : "Piece 1: the page could not read the answer. See the browser console.");
+  let offset = nextOffset(answer, PIECE);
+
+  const t2 = performance.now();
+  answer = await timedPut(offset, offset + PIECE);
+  const pieceMs = performance.now() - t2;
+  log(answer.readable ? `Piece 2 answered ${answer.status}.` : "Piece 2: the page could not read the answer.");
+  offset = nextOffset(answer, offset + PIECE);
+
+  // The third piece, aborted partway.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(20, pieceMs / 2));
+  const t3 = performance.now();
+  try {
+    await put(session.sessionUrl, big, offset, offset + PIECE, BIG, controller.signal);
+    sentBytes += PIECE;
+    log("Piece 3 finished before the abort.");
+  } catch (error) {
+    if (!error || error.name !== "AbortError") throw error;
+    page.thirdPieceAborted = true;
+    log("Piece 3 aborted partway.");
+  } finally {
+    clearTimeout(timer);
+    putMs += performance.now() - t3;
+  }
+  await wait(500);
+  const asked = await local("/offset", { sessionUrl: session.sessionUrl, size: BIG });
+  page.resumedFrom = asked.offset;
+  offset = asked.offset;
+  log(`Drive kept ${asked.offset} bytes; going on from there.`);
+
+  let last = null;
+  while (offset < BIG) {
+    const end = Math.min(offset + PIECE, BIG);
+    answer = await timedPut(offset, end);
+    if (end === BIG) {
+      last = answer;
+      offset = BIG;
+    } else {
+      offset = nextOffset(answer, end);
+    }
+  }
+  if (!last) throw new Error("the upload ended without a last piece");
+  page.lastStatus = last.readable ? last.status : null;
+  page.idReadable = !!(last.body && typeof last.body.id === "string");
+  page.idMatches = page.idReadable && last.body.id === session.fileId;
+  page.uploadSeconds = putMs / 1000;
+  page.mbPerSecond = putMs > 0 ? sentBytes / 1e6 / (putMs / 1000) : null;
+  log(last.readable
+    ? `Last piece answered ${last.status}; the file id ${page.idReadable ? "was" : "was not"} readable from the answer.`
+    : "Last piece: the page could not read the answer.");
+  if (page.mbPerSecond !== null) log(`Upload speed: ${page.mbPerSecond.toFixed(1)} MB/s.`);
+
+  const bigFacts = await (await fetch(`/file/${encodeURIComponent(session.fileId)}`)).json().catch(() => ({}));
+  log(`Drive reports the large file at ${bigFacts.size ?? "unknown"} bytes.`);
+
+  // A second, 1 MiB file, read back with the read-only token.
+  setStatus("Uploading and reading back a 1 MiB file…");
+  const small = pattern(SMALL);
+  const smallSession = await local("/session", { size: SMALL, origin: "page" });
+  const smallAnswer = await put(smallSession.sessionUrl, small, 0, SMALL, SMALL);
+  if (smallAnswer.readable) {
+    page.small.uploaded = smallAnswer.status === 200 || smallAnswer.status === 201;
+  } else {
+    page.small.uploaded = (await local("/offset", { sessionUrl: smallSession.sessionUrl, size: SMALL })).done === true;
+  }
+  log(`The 1 MiB file ${page.small.uploaded ? "is" : "is not"} uploaded.`);
+
+  const { accessToken } = await local("/read-token");
+  const whole = await read(smallSession.fileId, accessToken);
+  page.small.wholeStatus = whole.status;
+  page.small.wholeMatch = whole.status === 200 && sameBytes(whole.bytes, small);
+  const head = await read(smallSession.fileId, accessToken, "bytes=0-1023");
+  page.small.rangeStatus = head.status;
+  page.small.rangeMatch = head.status === 206 && sameBytes(head.bytes, small.subarray(0, 1024));
+  const middle = await read(session.fileId, accessToken, `bytes=${MIDDLE}-${MIDDLE + 1023}`);
+  page.bigRange.status = middle.status;
+  page.bigRange.match = middle.status === 206 && sameBytes(middle.bytes, big.subarray(MIDDLE, MIDDLE + 1024));
+  log(`Whole read of the 1 MiB file: ${whole.status ?? "not readable"}, ${page.small.wholeMatch ? "bytes match" : "bytes do not match"}.`);
+  log(`Range read of its first 1,024 bytes: ${head.status ?? "not readable"}, ${page.small.rangeMatch ? "match" : "no match"}.`);
+  log(`Range read in the middle of the 64 MiB file: ${middle.status ?? "not readable"}, ${page.bigRange.match ? "match" : "no match"}.`);
+
+  const trash = await local(`/trash-with-read-token/${encodeURIComponent(smallSession.fileId)}`);
+  log(`Moving a file to the trash with the read-only access answered ${trash.status}.`);
+
+  // A session opened with no Origin header.
+  setStatus("Trying a session opened with no Origin…");
+  const noOrigin = await local("/session", { size: NO_ORIGIN_SIZE, origin: "none" });
+  const noOriginAnswer = await put(noOrigin.sessionUrl, pattern(NO_ORIGIN_SIZE), 0, NO_ORIGIN_SIZE, NO_ORIGIN_SIZE);
+  page.noOrigin = { readable: noOriginAnswer.readable, status: noOriginAnswer.status };
+  log(noOriginAnswer.readable
+    ? `With no Origin, the PUT answered ${noOriginAnswer.status} and the page could read it.`
+    : "With no Origin, the page could not read the answer to its PUT. A cross-origin error in the console is expected here.");
+}
+
+async function run() {
+  button.disabled = true;
+  logEl.textContent = "";
+  const page = {
+    firstPiece: { readable: false, status: null, rangeReadable: false, rangeEnd: null },
+    thirdPieceAborted: false,
+    resumedFrom: null,
+    lastStatus: null,
+    idReadable: false,
+    idMatches: false,
+    uploadSeconds: null,
+    mbPerSecond: null,
+    small: { uploaded: false, wholeStatus: null, wholeMatch: false, rangeStatus: null, rangeMatch: false },
+    bigRange: { status: null, match: false },
+    noOrigin: { readable: false, status: null },
+    error: null,
+  };
+  try {
+    await check(page);
+  } catch (error) {
+    page.error = String((error && error.message) || error).slice(0, 200);
+    log(`Stopped: ${page.error}`);
+  }
+  setStatus("Sending the result and moving the test files to the trash…");
+  try {
+    const result = await local("/result", page);
+    log("");
+    for (const line of result.lines || []) log(line);
+    setStatus(result.ok ? "Done. Every required fact passed." : "Done. Some required facts failed. See the terminal.");
+  } catch {
+    setStatus("Done, but the result could not be sent. See the terminal.");
+  }
+}
+
+button.addEventListener("click", run);
+</script>
+</body>
+</html>
