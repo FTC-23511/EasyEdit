@@ -14,6 +14,7 @@
 // key, or an upload session address: every line goes through scrub(), and
 // result.json holds only booleans, status codes and numbers.
 
+import { EventEmitter } from "node:events";
 import http from "node:http";
 import vm from "node:vm";
 import { generateKeyPairSync, randomBytes, verify } from "node:crypto";
@@ -29,6 +30,7 @@ import {
   TOKEN_URL,
   WRITE_SCOPE,
   askOffset,
+  cancelSession,
   createFolder,
   generateFileId,
   getFile,
@@ -76,6 +78,8 @@ function fact(id, pass, text, data = {}) {
 }
 
 const notRun = (id) => fact(id, false, "not run");
+const inThirdPiece = (offset) => offset !== null && offset >= OFFSET_LOW && offset <= OFFSET_HIGH;
+const afterThird = (aborted) => (aborted ? "after the aborted third piece" : "after the third piece, which was never aborted");
 
 const judge = {
   F1(token, error) {
@@ -113,7 +117,8 @@ const judge = {
       pass,
       readable
         ? `the first piece was answered ${status}, readable by the page`
-        : "the page could not read the answer to the first piece (look for a cross-origin error in the browser console)",
+        : "the page could not read the answer to the first piece (the browser console shows a cross-origin error; " +
+          "it quotes the upload session address, so describe it rather than copying it)",
       { readable, status },
     );
   },
@@ -126,21 +131,23 @@ const judge = {
       { readable: rangeReadable, rangeEnd },
     );
   },
-  F6offset(offset) {
-    const inRange = offset !== null && offset >= OFFSET_LOW && offset <= OFFSET_HIGH;
-    return fact("F6", inRange, `offset ${offset ?? "none"} after the aborted third piece (${OFFSET_LOW} to ${OFFSET_HIGH}: ${yesNo(inRange)})`);
+  // The server's part of F6, for the self-test's output.
+  F6offset(offset, aborted) {
+    const inRange = inThirdPiece(offset);
+    return fact("F6", inRange, `offset ${offset ?? "none"} ${afterThird(aborted)} (${OFFSET_LOW} to ${OFFSET_HIGH}: ${yesNo(inRange)})`);
   },
+  // A pass needs the third piece really aborted: a piece that finished shows
+  // no resume at all.
   F6(offset, page) {
-    const inRange = offset !== null && offset >= OFFSET_LOW && offset <= OFFSET_HIGH;
+    const inRange = inThirdPiece(offset);
     const continued = offset !== null && page.resumedFrom === offset;
     const lastOk = page.lastStatus === 200 || page.lastStatus === 201;
     return fact(
       "F6",
-      inRange && continued && lastOk,
-      `offset ${offset ?? "none"} after the aborted third piece (${OFFSET_LOW} to ${OFFSET_HIGH}: ${yesNo(inRange)}); ` +
+      page.thirdPieceAborted && inRange && continued && lastOk,
+      `offset ${offset ?? "none"} ${afterThird(page.thirdPieceAborted)} (${OFFSET_LOW} to ${OFFSET_HIGH}: ${yesNo(inRange)}); ` +
         `went on from it: ${yesNo(continued)}; last PUT ${page.lastStatus ?? "not readable"}; ` +
-        `id readable from that answer: ${yesNo(page.idReadable)}` +
-        (page.thirdPieceAborted ? "" : "; the third piece finished before the abort"),
+        `id readable from that answer: ${yesNo(page.idReadable)}`,
       {
         offset,
         inRange,
@@ -212,18 +219,29 @@ const judge = {
       { mbPerSecond, uploadSeconds },
     );
   },
-  // `items`: { key, name, trashed: true | false | null }. null is a file that
-  // was never made (its upload did not finish), which leaves nothing to trash;
-  // the folder always exists by then.
-  F12(items, refusedStatus, error) {
+  // `items`: { key, name, trashed: true | false | null }, each file judged on
+  // its own before its folder was trashed. null is a file that was never made
+  // (its upload did not finish), which leaves nothing to trash; the folder
+  // always exists by then. Any refused trash call fails it. `cancelled` counts
+  // the unfinished upload sessions cleanup cancelled; `cancelStatus` is the
+  // first cancel that was not answered 499, 404 or 410.
+  F12(items, refusedStatus, error, { cancelled = 0, cancelStatus = null } = {}) {
     if (error) return fact("F12", false, error);
-    const pass = items.every((item) => item.trashed === true || (item.trashed === null && item.key !== "folder"));
+    const allTrashed = items.every((item) => item.trashed === true || (item.trashed === null && item.key !== "folder"));
+    const pass = allTrashed && !refusedStatus;
     const text = items
       .map((item) => `${item.name} ${item.trashed === null ? "never made" : yesNo(item.trashed)}`)
       .join(", ");
-    const data = {};
+    const data = { refusedStatus: refusedStatus ?? null, cancelledSessions: cancelled };
     for (const item of items) data[`${item.key}Trashed`] = item.trashed;
-    return fact("F12", pass, `in the trash: ${text}${refusedStatus ? ` (a trash call answered ${refusedStatus})` : ""}`, data);
+    return fact(
+      "F12",
+      pass,
+      `in the trash: ${text}${refusedStatus ? ` (a trash call answered ${refusedStatus})` : ""}` +
+        (cancelled > 0 ? `; cancelled ${cancelled} unfinished upload session${cancelled === 1 ? "" : "s"}` : "") +
+        (cancelStatus !== null ? `; cancelling an unfinished upload session answered ${cancelStatus}` : ""),
+      data,
+    );
   },
 };
 
@@ -280,29 +298,71 @@ function onlyNumbersAndBooleans(value) {
 }
 
 // ---------------------------------------------------------------------------
+// Secrets. A text shows a secret when any run of token characters in it shares
+// PART_LENGTH characters in a row with the secret's distinctive part: the
+// upload id of a session address, a token after "ya29.", the key's base64.
+
+const PART_LENGTH = 12;
+const TOKEN_RUN = /[A-Za-z0-9._~+/=%-]+/g;
+
+function distinctivePart(kind, secret) {
+  if (kind === "token") return secret.replace(/^ya29\./, "");
+  if (kind === "key") return secret.split(/\r?\n/).filter((line) => !line.startsWith("-----")).join("");
+  if (kind === "session") {
+    try {
+      return new URL(secret).searchParams.get("upload_id") || secret;
+    } catch {
+      return secret;
+    }
+  }
+  return secret;
+}
+
+function secretMatcher() {
+  const windows = new Set();
+  const short = new Set();
+  const inRun = (run) => {
+    for (const part of short) if (run.includes(part)) return true;
+    for (let i = 0; i + PART_LENGTH <= run.length; i++) if (windows.has(run.slice(i, i + PART_LENGTH))) return true;
+    return false;
+  };
+  return {
+    add(part) {
+      if (typeof part !== "string" || part.length === 0) return;
+      if (part.length < PART_LENGTH) short.add(part);
+      for (let i = 0; i + PART_LENGTH <= part.length; i++) windows.add(part.slice(i, i + PART_LENGTH));
+    },
+    found: (text) => (String(text).match(TOKEN_RUN) ?? []).some(inRun),
+    hide: (text) => String(text).replace(TOKEN_RUN, (run) => (inRun(run) ? "[hidden]" : run)),
+  };
+}
+
+// An error's message, never a body: a JSON parser's message quotes the text it
+// failed on.
+function safeMessage(error) {
+  if (error instanceof SyntaxError) return "an answer was not JSON";
+  return error instanceof Error ? error.message : String(error);
+}
+
+// ---------------------------------------------------------------------------
 // The check: its state, the local server's routes, and the verdict.
 
 function createCheck({ key, rootId, google, origin, print }) {
   const port = new URL(origin).port;
   const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
 
-  // Everything that must never be printed. Tokens and session addresses are
-  // added the moment they arrive.
-  const secrets = new Set();
-  const keep = (secret) => {
-    if (typeof secret === "string" && secret.length > 0) secrets.add(secret);
+  // Everything that must never be printed, and any substantial part of it.
+  // Tokens and session addresses are added the moment they arrive.
+  const secrets = secretMatcher();
+  const keep = (kind, secret) => {
+    if (typeof secret === "string" && secret.length > 0) secrets.add(distinctivePart(kind, secret));
     return secret;
   };
-  keep(key.private_key);
-  for (const line of key.private_key.split(/\r?\n/)) if (line.length >= 16 && !line.startsWith("-----")) keep(line);
+  keep("key", key.private_key);
 
-  function scrub(text) {
-    let out = String(text);
-    for (const secret of secrets) if (out.includes(secret)) out = out.split(secret).join("[hidden]");
-    return out;
-  }
+  const scrub = (text) => secrets.hide(text);
   const say = (line) => print(scrub(line));
-  const describe = (error) => scrub(error instanceof Error ? error.message : String(error));
+  const describe = (error) => scrub(safeMessage(error));
 
   const facts = new Map();
   const sessions = new Map(); // file id -> { role, size, sessionUrl, offsets }
@@ -316,6 +376,13 @@ function createCheck({ key, rootId, google, origin, print }) {
   let trashWithRead = null;
   let finished = false;
   let cleanup = null;
+  let closing = false; // once cleanup starts, nothing new is made on Google
+  const pending = new Set(); // setup and session opens still under way
+  const track = (promise) => {
+    pending.add(promise);
+    promise.then(() => pending.delete(promise), () => pending.delete(promise));
+    return promise;
+  };
   let offsetFact = null;
   let resolveDone;
   const done = new Promise((resolve) => {
@@ -325,7 +392,7 @@ function createCheck({ key, rootId, google, origin, print }) {
   async function writeAccess() {
     if (!write || Date.now() - write.at > TOKEN_REFRESH_MS) {
       const issued = await tokenFor(key, WRITE_SCOPE, google);
-      keep(issued.accessToken);
+      keep("token", issued.accessToken);
       write = { ...issued, at: Date.now() };
     }
     return write.accessToken;
@@ -334,14 +401,18 @@ function createCheck({ key, rootId, google, origin, print }) {
   async function readAccess() {
     if (!read || Date.now() - read.at > TOKEN_REFRESH_MS) {
       const issued = await tokenFor(key, READ_SCOPE, google);
-      keep(issued.accessToken);
+      keep("token", issued.accessToken);
       read = { ...issued, at: Date.now() };
     }
     return read;
   }
 
   // F1 and F2, before the page is used.
-  async function setup() {
+  function setup() {
+    return track(setUp());
+  }
+
+  async function setUp() {
     try {
       await writeAccess();
       facts.set("F1", judge.F1(write));
@@ -349,6 +420,7 @@ function createCheck({ key, rootId, google, origin, print }) {
       facts.set("F1", judge.F1(null, describe(error)));
       return false;
     }
+    if (closing) return false;
     try {
       const token = await writeAccess();
       const id = await createFolder(token, { name: "drive-check", parentId: rootId }, google);
@@ -372,12 +444,18 @@ function createCheck({ key, rootId, google, origin, print }) {
       return [400, { error: "size and origin (page or none) are required" }];
     }
     if (!ready) return [409, { error: "the check is not set up" }];
+    if (closing) return [409, { error: "the check is stopping" }];
     const role = mode === "none" ? "noOrigin" : size === BIG ? "big" : size === SMALL ? "small" : "other";
     if (byRole[role]) return [409, { error: "that session is already open; start the script again to run the check again" }];
+    return track(openFor(role, size, mode));
+  }
+
+  async function openFor(role, size, mode) {
     try {
       const token = await writeAccess();
       const fileId = await generateFileId(token, google);
       const sessionUrl = keep(
+        "session",
         await openSession(
           token,
           { id: fileId, name: `drive-check-${role}.bin`, parentId: folder.id, mimeType: MIME, size, origin: mode === "page" ? origin : null },
@@ -466,9 +544,15 @@ function createCheck({ key, rootId, google, origin, print }) {
     }
   }
 
-  // F12: every file this check made, then the folder, to the trash.
+  // F12: every file this check made, then the folder, to the trash. Each file
+  // is checked before the folder goes, since anything in a trashed folder reads
+  // as trashed. A file that does not exist means its upload never finished:
+  // its session is cancelled, so it cannot finish later. Waits first for a
+  // setup or session open still under way, and nothing new starts after.
   function trashEverything() {
     cleanup ??= (async () => {
+      closing = true;
+      await Promise.allSettled([...pending]);
       if (!folder) return judge.F12([], null, "nothing to move to the trash: the folder was never made");
       let token;
       try {
@@ -477,27 +561,42 @@ function createCheck({ key, rootId, google, origin, print }) {
         return judge.F12([], null, describe(error));
       }
       let refused = null;
-      const ids = [...sessions.keys(), folder.id];
-      for (const id of ids) {
+      const trash = async (id) => {
         const answer = await trashFile(token, id, google);
         if (answer.status !== 200 && answer.status !== 404) refused ??= answer.status;
-      }
-      async function trashed(id) {
-        if (!id) return null;
+        return answer.status;
+      };
+      async function trashedNow(id) {
         try {
           return (await getFile(token, id, google)).trashed === true;
         } catch (error) {
           return error instanceof GoogleError && error.status === 404 ? null : false;
         }
       }
+      const state = new Map();
+      let cancelled = 0;
+      let cancelStatus = null;
+      for (const [id, session] of sessions) {
+        const status = await trash(id);
+        if (status === 404) {
+          const answer = await cancelSession(session.sessionUrl, google);
+          if (answer === 499 || answer === 404 || answer === 410) cancelled += 1;
+          else cancelStatus ??= answer;
+          state.set(id, null);
+        } else {
+          state.set(id, status === 200 ? await trashedNow(id) : false);
+        }
+      }
+      await trash(folder.id);
+      const fileState = (id) => (id ? state.get(id) : null);
       const items = [
-        { key: "folder", name: "folder", trashed: await trashed(folder.id) },
-        { key: "big", name: "64 MiB file", trashed: await trashed(byRole.big) },
-        { key: "small", name: "1 MiB file", trashed: await trashed(byRole.small) },
-        { key: "noOrigin", name: "no-Origin file", trashed: await trashed(byRole.noOrigin) },
+        { key: "folder", name: "folder", trashed: await trashedNow(folder.id) },
+        { key: "big", name: "64 MiB file", trashed: fileState(byRole.big) },
+        { key: "small", name: "1 MiB file", trashed: fileState(byRole.small) },
+        { key: "noOrigin", name: "no-Origin file", trashed: fileState(byRole.noOrigin) },
       ];
-      if (byRole.other) items.push({ key: "other", name: "other file", trashed: await trashed(byRole.other) });
-      return judge.F12(items, refused);
+      if (byRole.other) items.push({ key: "other", name: "other file", trashed: fileState(byRole.other) });
+      return judge.F12(items, refused, null, { cancelled, cancelStatus });
     })();
     return cleanup;
   }
@@ -517,7 +616,7 @@ function createCheck({ key, rootId, google, origin, print }) {
         }
       }
       const offset = bigId ? (sessions.get(bigId).offsets[0] ?? null) : null;
-      offsetFact = judge.F6offset(offset);
+      offsetFact = judge.F6offset(offset, page.thirdPieceAborted);
       facts.set("F3", judge.F3(bigId, bigFile, bigError));
       facts.set("F4", judge.F4(page));
       facts.set("F5", judge.F5(page));
@@ -556,7 +655,7 @@ function createCheck({ key, rootId, google, origin, print }) {
       .map((f) => ({ verdict: f.verdict, line: scrub(`${f.id} ${f.verdict} ${f.text}`) }));
   }
 
-  return { setup, handle, finish, trashEverything, done, serverLines, say };
+  return { setup, handle, finish, trashEverything, done, serverLines, say, describe };
 }
 
 function reply(res, status, body) {
@@ -610,6 +709,38 @@ async function writeResult(path, json) {
 // ---------------------------------------------------------------------------
 // The real run.
 
+const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+
+// Sets the check up, waits for the page, and answers the outcome. A stop
+// (`signals` is the process) moves what was made to the trash and exits 130;
+// a second Ctrl-C quits at once.
+async function runCheck(check, { origin, signals, exit }) {
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    check.say("Stopped. Moving the test files to the trash.");
+    check.trashEverything().then(
+      (f12) => {
+        check.say(`${f12.id} ${f12.verdict} ${f12.text}`);
+        exit(130);
+      },
+      () => exit(130),
+    );
+  };
+  // Before anything is made on Google, so a stop at any point cleans up.
+  for (const name of STOP_SIGNALS) signals.once(name, stop);
+  const ready = await check.setup();
+  if (stopping) return new Promise(() => {}); // the stop exits when the trash is done
+  if (ready) {
+    check.say(`Open ${origin} in the browser, press Run check, and keep the tab in front until it says it is done.`);
+    return check.done;
+  }
+  return check.finish(null);
+}
+
+let activeCheck = null; // for the last error message, so it is scrubbed too
+
 async function main() {
   const keyFile = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
   const rootId = process.env.DRIVE_FOLDER_ID;
@@ -620,6 +751,7 @@ async function main() {
   const key = await readKeyFile(keyFile);
   const origin = `http://localhost:${PORT}`;
   const check = createCheck({ key, rootId, google: globalThis.fetch, origin, print: (line) => console.log(line) });
+  activeCheck = check;
   let servers;
   try {
     ({ servers } = await listen((req, res) => check.handle(req, res), PORT));
@@ -627,20 +759,7 @@ async function main() {
     console.error(`Cannot listen on port ${PORT} (${error?.code ?? "error"}).`);
     return 1;
   }
-  let outcome;
-  if (await check.setup()) {
-    process.once("SIGINT", () => {
-      check.say("Stopped. Moving the test files to the trash.");
-      check.trashEverything().then((f12) => {
-        check.say(`${f12.id} ${f12.verdict} ${f12.text}`);
-        process.exit(130);
-      });
-    });
-    check.say(`Open ${origin} in the browser, press Run check, and keep the tab in front until it says it is done.`);
-    outcome = await check.done;
-  } else {
-    outcome = await check.finish(null);
-  }
+  const outcome = await runCheck(check, { origin, signals: process, exit: (code) => process.exit(code) });
   closeAll(servers);
   await writeResult(join(HERE, "out", "result.json"), outcome.json);
   check.say(outcome.ok ? "Every required fact passed." : "Some required facts failed.");
@@ -675,6 +794,7 @@ function pretendGoogle({ clientEmail, publicKey, rootId }) {
   const tokens = new Map(); // access token -> scope
   const assertions = [];
   const sessionUrls = [];
+  const uploadIds = [];
   const generated = new Set();
   const files = new Map();
   const sessions = new Map();
@@ -792,6 +912,7 @@ function pretendGoogle({ clientEmail, publicKey, rootId }) {
     const uploadId = randomBytes(32).toString("base64url");
     const sessionUrl = `${API}/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&upload_id=${uploadId}`;
     sessionUrls.push(sessionUrl);
+    uploadIds.push(uploadId);
     const origin = headers.get("origin");
     sessions.set(uploadId, {
       origin,
@@ -982,6 +1103,7 @@ function pretendGoogle({ clientEmail, publicKey, rootId }) {
     fetch,
     files,
     secrets: () => [...tokens.keys(), ...sessionUrls, ...assertions],
+    issued: () => ({ tokens: [...tokens.keys()], sessionUrls: [...sessionUrls], uploadIds: [...uploadIds], assertions: [...assertions] }),
   };
 }
 
@@ -1146,7 +1268,7 @@ async function selfTest() {
     // The whole check: the server code, with page.html's script as the page.
     let check;
     const listening = await listen((req, res) => check.handle(req, res), 0);
-    servers = listening.servers;
+    servers.push(...listening.servers);
     const origin = `http://localhost:${listening.port}`;
     const printed = [];
     check = createCheck({ key, rootId, google: google.fetch, origin, print: (line) => printed.push(line) });
@@ -1180,9 +1302,20 @@ async function selfTest() {
     // Nothing secret printed, shown on the page, or written.
     const everything = [...printed, page.log, page.status, ...page.console, resultText].join("\n");
     const pemLines = key.private_key.split(/\r?\n/).filter((l) => l.length >= 16 && !l.startsWith("-----"));
-    const secrets = [...google.secrets(), key.private_key, ...pemLines];
-    expect(secrets.length > 5, "the pretend Google recorded no tokens or sessions");
-    expect(!secrets.some((secret) => everything.includes(secret)), "a token, a key line or a session address appeared in the output");
+    // Whole secrets, and any substantial part of one: an upload id, a token
+    // after "ya29.", a JWT's signature, the key's base64.
+    const leaked = (text) => {
+      const whole = [...google.secrets(), key.private_key, ...pemLines];
+      const record = google.issued();
+      const parts = secretMatcher();
+      for (const token of record.tokens) parts.add(token.replace(/^ya29\./, ""));
+      for (const uploadId of record.uploadIds) parts.add(uploadId);
+      for (const assertion of record.assertions) parts.add(assertion.split(".")[2] ?? "");
+      for (const line of pemLines) parts.add(line);
+      return whole.some((secret) => text.includes(secret)) || parts.found(text);
+    };
+    expect(google.secrets().length > 5, "the pretend Google recorded no tokens or sessions");
+    expect(!leaked(everything), "a token, a key line or a session address appeared in the output");
     expect(!everything.includes("[hidden]"), "something tried to print a secret and was scrubbed");
     expect(onlyNumbersAndBooleans(JSON.parse(resultText)), "result.json holds more than booleans, status codes and numbers");
 
@@ -1261,6 +1394,131 @@ async function selfTest() {
     expect(judge.F12([...trashedItems.slice(0, 2), { ...trashedItems[2], trashed: false }]).verdict === "FAIL", "judge.F12 should fail a file left out of the trash");
     expect(judge.F12([{ ...trashedItems[0], trashed: null }, ...trashedItems.slice(1)]).verdict === "FAIL", "judge.F12 should fail a missing folder");
     expect(judge.F5(good).verdict === "RECORDED" && judge.F10(good).verdict === "RECORDED", "F5 and F10 should be recorded, not judged");
+    expect(judge.F12(trashedItems, 403).verdict === "FAIL", "judge.F12 should fail when a trash call was refused");
+    expect(judge.F6(20971520, { ...good, thirdPieceAborted: false }).verdict === "FAIL", "judge.F6 should fail when the third piece was never aborted");
+    expect(!judge.F6(20971520, { ...good, thirdPieceAborted: false }).text.includes("aborted third"), "judge.F6 should not call an unaborted piece aborted");
+    expect(!judge.F6offset(OFFSET_HIGH, false).text.includes("aborted third"), "the F6 offset line should not call an unaborted piece aborted");
+
+    // Cleanup, against checks of their own.
+    const startCheck = async (googleFetch) => {
+      let started;
+      const listening = await listen((req, res) => started.handle(req, res), 0);
+      servers.push(...listening.servers);
+      const lines = [];
+      const at = `http://localhost:${listening.port}`;
+      started = createCheck({ key, rootId, google: googleFetch, origin: at, print: (line) => lines.push(line) });
+      const post = async (path, body) => (await fetch(`${at}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+      return { check: started, origin: at, lines, post };
+    };
+    const putAll = (url, size) =>
+      google.fetch(url, { method: "PUT", headers: { "Content-Range": `bytes 0-${size - 1}/${size}` }, body: patternBytes(size) });
+    const fileIdOf = (input) => decodeURIComponent(/^\/drive\/v3\/files\/([^/]+)$/.exec(new URL(String(input)).pathname)?.[1] ?? "");
+    const isPatch = (init) => (init?.method ?? "GET").toUpperCase() === "PATCH";
+
+    // F12: a file's trash refused while its folder's goes through.
+    const refuse = new Set();
+    const refusing = (input, init = {}) =>
+      isPatch(init) && refuse.has(fileIdOf(input))
+        ? Promise.resolve(new Response(JSON.stringify({ error: { errors: [{ reason: "insufficientFilePermissions" }] } }), { status: 403 }))
+        : google.fetch(input, init);
+    const refused = await startCheck(refusing);
+    expect(await refused.check.setup(), "the refused-trash check did not set up");
+    const refusedSmall = await refused.post("/session", { size: SMALL, origin: "page" });
+    await putAll(refusedSmall.sessionUrl, SMALL);
+    refuse.add(refusedSmall.fileId);
+    expect((await refused.check.trashEverything()).verdict === "FAIL", "F12 should fail when a file's trash is refused, even though its folder's went through");
+
+    // F12: a file's trash answered 200 but did not move it; only its folder went.
+    const ignore = new Set();
+    const ignoring = (input, init = {}) =>
+      isPatch(init) && ignore.has(fileIdOf(input))
+        ? Promise.resolve(new Response(JSON.stringify({ id: fileIdOf(input) }), { status: 200 }))
+        : google.fetch(input, init);
+    const ignored = await startCheck(ignoring);
+    expect(await ignored.check.setup(), "the ignored-trash check did not set up");
+    const ignoredSmall = await ignored.post("/session", { size: SMALL, origin: "page" });
+    await putAll(ignoredSmall.sessionUrl, SMALL);
+    ignore.add(ignoredSmall.fileId);
+    expect((await ignored.check.trashEverything()).verdict === "FAIL", "F12 should judge each file on its own, not through its trashed folder");
+
+    // Cleanup cancels a session that never finished, and still passes F12.
+    const tokensBefore = google.issued().tokens.length;
+    let cancelsCalls = 0;
+    const cancels = await startCheck((input, init) => {
+      cancelsCalls += 1;
+      return google.fetch(input, init);
+    });
+    expect(await cancels.check.setup(), "the cancel check did not set up");
+    const cancelsToken = google.issued().tokens[tokensBefore];
+    const cancelsSmall = await cancels.post("/session", { size: SMALL, origin: "page" });
+    await putAll(cancelsSmall.sessionUrl, SMALL);
+    const unfinished = await cancels.post("/session", { size: 2 * BLOCK, origin: "page" });
+    await google.fetch(unfinished.sessionUrl, { method: "PUT", headers: { "Content-Range": `bytes 0-${BLOCK - 1}/${2 * BLOCK}` }, body: patternBytes(BLOCK) });
+    const cancelled = await cancels.check.trashEverything();
+    expect(cancelled.verdict === "PASS", `F12 should pass with an unfinished upload: ${cancelled.text}`);
+    const afterCancel = await askOffset(unfinished.sessionUrl, 2 * BLOCK, google.fetch).then(() => null, (error) => error);
+    expect(afterCancel?.status === 499, "cleanup should cancel an upload session that did not finish");
+    const callsAfterCleanup = cancelsCalls;
+    const lateSession = await cancels.post("/session", { size: 3 * BLOCK, origin: "none" });
+    expect(lateSession.sessionUrl === undefined && cancelsCalls === callsAfterCleanup, "no session should be opened once cleanup has run");
+
+    // A stop while the folder is being made still trashes the folder.
+    const signals = new EventEmitter();
+    const foldersBefore = new Set([...google.files.values()].filter((f) => f.mimeType === FOLDER_MIME).map((f) => f.id));
+    const stopping = (input, init = {}) => {
+      if (new URL(String(input)).pathname === "/drive/v3/files" && (init.method ?? "GET").toUpperCase() === "POST") signals.emit("SIGINT");
+      return google.fetch(input, init);
+    };
+    const stopped = await startCheck(stopping);
+    let exited;
+    const exitCode = new Promise((resolve) => {
+      exited = resolve;
+    });
+    runCheck(stopped.check, { origin: stopped.origin, signals, exit: exited });
+    let timer;
+    const code = await Promise.race([exitCode, new Promise((resolve) => (timer = setTimeout(() => resolve("no exit"), 5000)))]);
+    clearTimeout(timer);
+    expect(code === 130, `a stop while the folder is being made should clean up and exit 130 (got ${code})`);
+    const newFolders = [...google.files.values()].filter((f) => f.mimeType === FOLDER_MIME && !foldersBefore.has(f.id));
+    expect(newFolders.length === 1 && newFolders[0].trashed === true, "a stop while the folder is being made should still trash it");
+
+    // The secret guard and scrub() catch a secret's distinctive parts.
+    const record = google.issued();
+    const uploadId = record.uploadIds.at(-1);
+    const someToken = record.tokens.at(-1);
+    const keyLine = pemLines[3];
+    expect(leaked(`upload ${uploadId} here`), "the guard should catch an upload id alone");
+    expect(leaked(record.sessionUrls.at(-1).slice(0, record.sessionUrls.at(-1).indexOf("upload_id=") + 30)), "the guard should catch a cut session address");
+    expect(leaked(`t=${someToken.slice(5, 40)}`), "the guard should catch part of a token");
+    expect(leaked(`k ${keyLine.slice(8, 40)} k`), "the guard should catch part of a key line");
+    expect(!leaked("F7 PASS size 67108864; md5 matches: yes; driveId 0APretendSharedDriveId"), "the guard should pass an ordinary line");
+    const cancelsUploadId = new URL(unfinished.sessionUrl).searchParams.get("upload_id");
+    const shown = (prefix) => cancels.lines.find((line) => line.startsWith(prefix)) ?? "";
+    cancels.check.say(`upload ${cancelsUploadId}`);
+    cancels.check.say(`address ${unfinished.sessionUrl.slice(0, unfinished.sessionUrl.indexOf("upload_id=") + 30)}`);
+    cancels.check.say(`token ${cancelsToken.slice(5, 40)}`);
+    cancels.check.say(`key ${keyLine.slice(8, 40)}`);
+    cancels.check.say("plain F7 PASS size 67108864; driveId 0APretendSharedDriveId");
+    expect(!shown("upload").includes(cancelsUploadId.slice(0, 16)), "scrub() should hide an upload id alone");
+    expect(!shown("address").includes(cancelsUploadId.slice(0, 16)), "scrub() should hide a cut session address");
+    expect(!shown("token").includes(cancelsToken.slice(5, 21)), "scrub() should hide part of a token");
+    expect(!shown("key").includes(keyLine.slice(8, 24)), "scrub() should hide part of a key line");
+    expect(shown("plain") === "plain F7 PASS size 67108864; driveId 0APretendSharedDriveId", "scrub() should leave an ordinary line alone");
+
+    // No error message carries a response body.
+    const notJson = () => Promise.resolve(new Response("<html>proxy page body</html>", { status: 200, headers: { "content-type": "text/html" } }));
+    const badJson = [
+      ["token", () => tokenFor(key, WRITE_SCOPE, notJson)],
+      ["generateIds", () => generateFileId("t", notJson)],
+      ["create folder", () => createFolder("t", { name: "x", parentId: rootId }, notJson)],
+      ["files.get", () => getFile("t", "x", notJson)],
+    ];
+    for (const [name, call] of badJson) {
+      const error = await call().then(() => null, (e) => e);
+      expect(error instanceof GoogleError && error.reason === "badJson" && !error.message.includes("proxy"), `${name}: an answer that is not JSON should fail without quoting it`);
+    }
+    const quoted = cancels.check.describe(new SyntaxError(`Unexpected token '<', "<html>proxy page body</html>" is not valid JSON`));
+    expect(!quoted.includes("proxy"), "describe() should not quote a body from a JSON error");
   } finally {
     closeAll(servers);
     await rm(tmp, { recursive: true, force: true });
@@ -1280,7 +1538,7 @@ let code;
 try {
   code = process.argv.includes("--self-test") ? await selfTest() : await main();
 } catch (error) {
-  console.error(`The drive check stopped: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`The drive check stopped: ${activeCheck ? activeCheck.describe(error) : safeMessage(error)}`);
   code = 1;
 }
 process.exit(code);

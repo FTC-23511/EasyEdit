@@ -64,6 +64,16 @@ async function failure(call, res) {
   return new GoogleError(call, res.status, await reasonOf(res));
 }
 
+// The body of a good answer. One that is not JSON fails with a fixed reason,
+// since the parser's own message would quote the body.
+async function jsonOf(call, res) {
+  try {
+    return await res.json();
+  } catch {
+    throw new GoogleError(call, res.status, "badJson");
+  }
+}
+
 function bearer(token) {
   return { Authorization: `Bearer ${token}` };
 }
@@ -114,7 +124,7 @@ export async function tokenFor(key, scope, fetch) {
     body: `grant_type=${JWT_BEARER}&assertion=${unsigned}.${signature}`,
   });
   if (!res.ok) throw await failure("token", res);
-  const json = await res.json();
+  const json = await jsonOf("token", res);
   if (typeof json?.access_token !== "string") throw new GoogleError("token", res.status, "noAccessToken");
   return { accessToken: json.access_token, expiresIn: json.expires_in };
 }
@@ -125,7 +135,7 @@ export async function generateFileId(token, fetch) {
     headers: bearer(token),
   });
   if (!res.ok) throw await failure("generateIds", res);
-  const json = await res.json();
+  const json = await jsonOf("generateIds", res);
   const id = json?.ids?.[0];
   if (typeof id !== "string") throw new GoogleError("generateIds", res.status, "noId");
   return id;
@@ -139,7 +149,7 @@ export async function createFolder(token, { name, parentId }, fetch) {
     body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
   });
   if (!res.ok) throw await failure("create folder", res);
-  const json = await res.json();
+  const json = await jsonOf("create folder", res);
   if (typeof json?.id !== "string") throw new GoogleError("create folder", res.status, "noId");
   return json.id;
 }
@@ -187,13 +197,27 @@ export async function askOffset(sessionUrl, size, fetch) {
   throw await failure("offset question", res);
 }
 
+// cancel a session: DELETE on the address, no Authorization. Drive answers 499
+// (drive-facts 11); 404 and 410 also mean the session is gone. Answers the
+// status, or 0 when there was no answer.
+export async function cancelSession(sessionUrl, fetch) {
+  let res;
+  try {
+    res = await send("cancel session", fetch, sessionUrl, { method: "DELETE" });
+  } catch {
+    return 0;
+  }
+  await res.arrayBuffer().catch(() => null);
+  return res.status;
+}
+
 // file facts.
 export async function getFile(token, id, fetch) {
   const res = await send("files.get", fetch, `${API}/drive/v3/files/${encodeURIComponent(id)}?supportsAllDrives=true&fields=${FILE_FIELDS}`, {
     headers: bearer(token),
   });
   if (!res.ok) throw await failure("files.get", res);
-  return res.json();
+  return jsonOf("files.get", res);
 }
 
 // trash: moves a file or folder to the trash. Answers the status instead of
