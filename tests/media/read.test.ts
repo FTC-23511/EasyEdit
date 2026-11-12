@@ -883,18 +883,174 @@ describe("the files this browser keeps", () => {
     const broken = async (): Promise<never> => {
       throw new Error("The store is broken.");
     };
-    for (const store of [{ ...h.store, read: broken }, { ...h.store, entries: broken }, { ...h.store, read: broken, entries: broken, write: broken, remove: broken, touch: broken }] as FileStore[]) {
+    // Each store, and how often Drive is read for the two files below. A store that lists and reads but cannot
+    // write is what a full disk looks like: the bytes it was being given as they arrived are read once more.
+    const rows: [string, FileStore, number][] = [
+      ["read", { ...h.store, read: broken }, 2],
+      ["entries", { ...h.store, entries: broken }, 2],
+      ["write", { ...h.store, write: broken }, 3],
+      ["touch", { ...h.store, touch: broken }, 2],
+      ["all of it", { ...h.store, read: broken, entries: broken, write: broken, remove: broken, touch: broken }, 2],
+    ];
+    for (const [what, store, driveReads] of rows) {
+      h.reads.length = 0;
       // Once as Drive answers, with the file's length, and once without it.
       for (const net of [h.fake.fetch, withoutLength(h.fake.fetch)]) {
         h.net.fetch = net;
         const files = createMediaFiles({ tokens: h.tokens, store, fetch: h.fetch, now: h.now });
         const got = await files.get("f1");
-        expect(got.ok && got.blob.size).toBe(3 * MB);
-        await expect(files.put("made", new Blob(["x"]))).resolves.toBeUndefined();
+        expect(got.ok && got.blob.size, what).toBe(3 * MB);
+        await expect(files.put("made", new Blob(["x"])), what).resolves.toBeUndefined();
         await h.store.remove("f1");
         await h.store.remove("made");
       }
+      expect(h.reads, what).toHaveLength(driveReads);
     }
-    expect(h.reads).toHaveLength(6);
+  });
+
+  it("a store that cannot take a file as it arrives is left out: the file is read once more, and no file is offered to it again", async () => {
+    const h = filesHarness({ f1: 3 * MB, f2: 3 * MB, f3: 3 * MB });
+    await h.store.write("kept", zeros(MB));
+    const offered: string[] = [];
+    const full: FileStore = {
+      ...h.store,
+      async write(fileId) {
+        offered.push(fileId);
+        throw new DOMException("The disk is full.", "QuotaExceededError");
+      },
+    };
+    const files = createMediaFiles({ tokens: h.tokens, store: full, fetch: h.fetch, now: h.now });
+    const first = await files.get("f1");
+    expect(first.ok && first.blob.size).toBe(3 * MB);
+    expect(h.reads).toEqual(["f1", "f1"]); // once into the store, which lost it, and once more without the store
+    // From here on a file is read once, and the store is not asked to take it, whichever way it comes.
+    const second = await files.get("f2");
+    expect(second.ok && second.blob.size).toBe(3 * MB);
+    h.net.fetch = withoutLength(h.fake.fetch);
+    const third = await files.get("f3");
+    expect(third.ok && third.blob.size).toBe(3 * MB);
+    await files.put("made", new Blob(["x"]));
+    expect(h.reads).toEqual(["f1", "f1", "f2", "f3"]);
+    expect(offered).toEqual(["f1"]);
+    // What the store already holds is still served from it.
+    const kept = await files.get("kept");
+    expect(kept.ok && kept.blob).toBe(await h.store.read("kept"));
+    expect(h.reads).toHaveLength(4);
+    expect(await h.stored()).toEqual(["kept"]);
+    // That is this page's doing only: the next page tries the store again.
+    h.net.fetch = h.fake.fetch;
+    expect((await createMediaFiles({ tokens: h.tokens, store: h.store, fetch: h.fetch, now: h.now }).get("f1")).ok).toBe(true);
+    expect(await h.stored()).toEqual(["f1", "kept"]);
+  });
+
+  it("a store that cannot take a whole file does not lose it: the bytes are here already", async () => {
+    const h = filesHarness({ f1: 3 * MB, f2: 3 * MB });
+    const offered: string[] = [];
+    const full: FileStore = {
+      ...h.store,
+      async write(fileId) {
+        offered.push(fileId);
+        throw new DOMException("The disk is full.", "QuotaExceededError");
+      },
+    };
+    h.net.fetch = withoutLength(h.fake.fetch);
+    const files = createMediaFiles({ tokens: h.tokens, store: full, fetch: h.fetch, now: h.now, capBytes: 5 * MB });
+    for (const id of ["f1", "f2", "f1"]) {
+      const got = await files.get(id);
+      expect(got.ok && got.blob.size, id).toBe(3 * MB);
+    }
+    expect(h.reads).toEqual(["f1", "f2", "f1"]); // never twice for one get
+    // A write that failed holds no room afterwards: there was room to offer each file.
+    expect(offered).toEqual(["f1", "f2", "f1"]);
+  });
+
+  it("when the store loses a file and Drive cannot give it again, the read says what Drive said", async () => {
+    const answers: [() => Response, { ok: false; problem: string }][] = [
+      [() => new Response("gone", { status: 404 }), { ok: false, problem: "missing" }],
+      [() => new Response("no", { status: 403 }), { ok: false, problem: "refused" }],
+      [() => new Response("later", { status: 503 }), { ok: false, problem: "offline" }],
+      [() => new Response(cutOffBody(), { status: 200, headers: { "Content-Length": String(3 * MB) } }), { ok: false, problem: "offline" }],
+    ];
+    for (const [secondAnswer, problem] of answers) {
+      const h = filesHarness({ f1: 3 * MB });
+      const files = createMediaFiles({ tokens: h.tokens, store: { ...h.store, write: () => Promise.reject(new Error("The store is broken.")) }, fetch: h.fetch, now: h.now });
+      h.net.fetch = ((input: RequestInfo | URL, init?: RequestInit) => (h.reads.length === 2 ? Promise.resolve(secondAnswer()) : h.fake.fetch(input, init))) as typeof fetch;
+      expect(await files.get("f1")).toEqual(problem);
+      expect(h.reads).toEqual(["f1", "f1"]);
+      // Not remembered, and the store stays out of it: the next read is one read.
+      const got = await files.get("f1");
+      expect(got.ok && got.blob.size).toBe(3 * MB);
+      expect(h.reads).toEqual(["f1", "f1", "f1"]);
+    }
+  });
+
+  it("a store that gives up on a file as it arrives stops that download", async () => {
+    const h = filesHarness({ f1: 3 * MB });
+    const stopped: unknown[] = [];
+    const endless = new ReadableStream<Uint8Array>({ pull: (controller) => controller.enqueue(new Uint8Array(MB)), cancel: (reason) => void stopped.push(reason) });
+    const store: FileStore = {
+      ...h.store,
+      async write(_fileId, body) {
+        if (!(body instanceof Blob)) await body.cancel("no room");
+        throw new Error("The store is broken.");
+      },
+    };
+    const files = createMediaFiles({ tokens: h.tokens, store, fetch: h.fetch, now: h.now });
+    h.net.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      h.reads.length === 1 ? Promise.resolve(new Response(endless, { status: 200, headers: { "Content-Length": String(3 * MB) } })) : h.fake.fetch(input, init)) as typeof fetch;
+    const got = await files.get("f1");
+    expect(got.ok && got.blob.size).toBe(3 * MB);
+    expect(stopped).toEqual(["no room"]);
+    expect(h.reads).toEqual(["f1", "f1"]);
+  });
+
+  it("a store that cannot say when a file was used still hands it out, and keeps it", async () => {
+    // Once as Drive answers, with the file's length, and once without it.
+    for (const fetchOf of [(fetchFn: typeof fetch) => fetchFn, withoutLength]) {
+      const h = filesHarness({ f1: 3 * MB });
+      let touches = 0;
+      const store: FileStore = {
+        ...h.store,
+        async touch() {
+          touches += 1;
+          throw new Error("The store is broken.");
+        },
+      };
+      h.net.fetch = fetchOf(h.fake.fetch);
+      const files = createMediaFiles({ tokens: h.tokens, store, fetch: h.fetch, now: h.now, capBytes: 4 * MB });
+      const first = await files.get("f1");
+      expect(first.ok && first.blob.size).toBe(3 * MB);
+      const kept = await h.store.read("f1");
+      expect(kept?.size).toBe(3 * MB);
+      // The stored file is served from the store from then on: Drive was read once.
+      for (let n = 0; n < 2; n += 1) {
+        const again = await files.get("f1");
+        expect(again.ok && again.blob).toBe(kept);
+      }
+      expect(h.reads).toEqual(["f1"]);
+      expect(touches).toBe(3);
+      // And it counts as handed out, whether it came from Drive or from the store: nothing drops it.
+      await files.put("other", zeros(2 * MB));
+      expect(await h.stored()).toEqual(["f1"]);
+      const nextPage = createMediaFiles({ tokens: h.tokens, store, fetch: h.fetch, now: h.now, capBytes: 4 * MB });
+      expect((await nextPage.get("f1")).ok).toBe(true);
+      await nextPage.put("other", zeros(2 * MB));
+      expect(await h.stored()).toEqual(["f1"]);
+      expect(h.reads).toEqual(["f1"]);
+    }
+  });
+
+  it("a store whose touch throws at once, instead of rejecting, is no different", async () => {
+    const h = filesHarness({ f1: 3 * MB });
+    const store = {
+      ...h.store,
+      touch() {
+        throw new Error("The store is broken.");
+      },
+    } as FileStore;
+    const files = createMediaFiles({ tokens: h.tokens, store, fetch: h.fetch, now: h.now });
+    expect((await files.get("f1")).ok).toBe(true);
+    expect((await files.get("f1")).ok).toBe(true);
+    expect(h.reads).toEqual(["f1"]);
   });
 });

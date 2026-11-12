@@ -52,6 +52,26 @@ function declaredLength(response: Response): number | null {
   return header !== null && /^\d+$/.test(header) ? Number(header) : null;
 }
 
+// The same body, and whether it broke on the way. A store that fails to take a body that did not break has itself to blame.
+function watched(body: ReadableStream<Uint8Array>): { body: ReadableStream<Uint8Array>; broke: () => boolean } {
+  const reader = body.getReader();
+  let broke = false;
+  const passedOn = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (error) {
+        broke = true;
+        controller.error(error);
+      }
+    },
+    cancel: (reason) => reader.cancel(reason), // a store that gives up on the body stops the download
+  });
+  return { body: passedOn, broke: () => broke };
+}
+
 export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; fetch?: typeof fetch; now?: () => number; capBytes?: number }): MediaFiles {
   const { tokens, store } = deps;
   const now = deps.now ?? Date.now;
@@ -59,6 +79,7 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
   const handedOut = new Set<string>(); // stored files a caller holds: a blob from the store is only good while its file is there
   const arriving = new Map<string, number>(); // files being written, and their bytes: room is held for them, and the store may not list them yet
   const wanted = new Map<string, Promise<Got>>(); // the reads under way, shared by everyone who asks for the same file meanwhile
+  let storing = true; // false once the store has lost a file it was being given as it arrived: it is offered no more files
   let turn: Promise<unknown> = Promise.resolve();
 
   // Looking a file up and making room take turns, so that no file is dropped while it is being handed out.
@@ -68,12 +89,21 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
     return done;
   }
 
+  // Notes that a file was used now. A store that cannot note it still has the file, so the file is no worse for it.
+  async function touch(fileId: string): Promise<void> {
+    try {
+      await store.touch(fileId, now());
+    } catch {
+      // It counts as used longer ago than it was.
+    }
+  }
+
   const fromStore = (fileId: string) =>
     inTurn(async () => {
       const blob = await store.read(fileId);
       if (blob) {
         handedOut.add(fileId);
-        await store.touch(fileId, now());
+        await touch(fileId);
       }
       return blob;
     });
@@ -98,7 +128,7 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
     try {
       const blob = await store.write(fileId, body);
       if (handOut) handedOut.add(fileId);
-      await store.touch(fileId, now());
+      await touch(fileId);
       return blob;
     } finally {
       arriving.delete(fileId);
@@ -106,16 +136,29 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
   }
 
   // The bytes of an answer from Drive, stored when there is room for them. It throws when the body fails part way.
-  async function take(fileId: string, response: Response): Promise<Blob> {
+  // Null: the store was given the bytes as they arrived and lost them, so they have to be read again.
+  async function take(fileId: string, response: Response): Promise<Blob | null> {
+    if (!storing) return response.blob();
     const declared = declaredLength(response);
     if (declared !== null && response.body) {
       // The length is known before the bytes are here, so they can go to the store as they arrive.
       const room = await makeRoom(fileId, declared).catch(() => false);
-      return room ? write(fileId, response.body, true) : response.blob();
+      if (!room) return response.blob();
+      const arrivingBody = watched(response.body);
+      try {
+        return await write(fileId, arrivingBody.body, true);
+      } catch (error) {
+        if (arrivingBody.broke()) throw error;
+        // The download was sound and the store failed (a full disk does this). It would fail the next file the
+        // same way, and each one would be read twice, so from here on files are only read.
+        storing = false;
+        return null;
+      }
     }
     const whole = await response.blob();
     const room = await makeRoom(fileId, whole.size).catch(() => false);
-    return room ? write(fileId, whole, true) : whole;
+    // A store that cannot take the file costs nothing here: the bytes have all arrived.
+    return room ? write(fileId, whole, true).catch(() => whole) : whole;
   }
 
   async function load(fileId: string): Promise<Got> {
@@ -125,7 +168,12 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
     const read = await readDriveFile(fileId, { tokens, fetch: deps.fetch });
     if (!read.ok) return read;
     try {
-      return { ok: true, blob: await take(fileId, read.response) };
+      const blob = await take(fileId, read.response);
+      if (blob) return { ok: true, blob };
+      // The store lost the bytes, and Drive still has them: one more read, which the store has no part in.
+      const again = await readDriveFile(fileId, { tokens, fetch: deps.fetch });
+      if (!again.ok) return again;
+      return { ok: true, blob: await again.response.blob() };
     } catch {
       return { ok: false, problem: "offline" }; // the body did not all arrive; nothing of it is kept
     }
@@ -142,7 +190,7 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
     // Kept when there is room. The caller has the bytes either way, so a store that cannot take them is no failure.
     async put(fileId, blob) {
       try {
-        if (await makeRoom(fileId, blob.size)) await write(fileId, blob, false);
+        if (storing && (await makeRoom(fileId, blob.size))) await write(fileId, blob, false);
       } catch {
         // Not kept.
       }
