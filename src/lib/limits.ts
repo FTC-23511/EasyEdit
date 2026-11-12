@@ -18,6 +18,7 @@ export const LIMITS = {
   connectorWritesPerMinute: 30, // changes one member's Claude may make in a minute
   connectorBytesPerDay: 10 * 1024 * 1024, // change data one member's Claude may store in a day
   connectorProjectsPerDay: 50, // projects one member's Claude may create in a day
+  connectorNewIdLines: 50, // new ids listed after a write; the rest are in the project
 } as const;
 
 export type Limits = { readonly [K in keyof typeof LIMITS]: number };

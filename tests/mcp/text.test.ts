@@ -84,5 +84,6 @@ it("the connector's limits are in LIMITS", () => {
   expect(LIMITS).toMatchObject({
     connectorReadChars: 16_000, connectorEchoChars: 6_000, connectorListPage: 50, connectorConflictEntries: 10,
     connectorTextItems: 20, connectorWritesPerMinute: 30, connectorBytesPerDay: 10 * 1024 * 1024, connectorProjectsPerDay: 50,
+    connectorNewIdLines: 50,
   });
 });

@@ -213,6 +213,19 @@ describe("edit_timeline", () => {
     expect(conflict.text.length).toBeLessThanOrEqual(LIMITS.connectorEchoChars + 1500);
   });
 
+  it("a batch of 500 new clips names the first 50 ids and says how many more there are", async () => {
+    const { edit } = await setup();
+    const r = await edit(0, Array.from({ length: 500 }, (_, i) => addText(i * 30)));
+    expect(r.isError).toBe(false);
+    expect(r.text.length).toBeLessThan(LIMITS.connectorReadChars);
+    const lines = r.text.split("\n");
+    const start = lines.indexOf("New ids:") + 1;
+    const ids = lines.slice(start, start + 50);
+    expect(ids.every((line) => /^ {2}clip \S+ on track t1$/.test(line))).toBe(true);
+    expect(lines[start + 50]).toBe("  … and 450 more. Read the project to see them.");
+    expect(lines[start + 51]).toMatch(/^Project "/);
+  });
+
   it("a conflict on a project too long to attach whole says to read the rest first", async () => {
     const { db, id, edit } = await setup();
     const version = await fillWithText(db, grace, id, 999);

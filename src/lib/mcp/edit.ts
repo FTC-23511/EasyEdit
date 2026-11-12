@@ -58,7 +58,9 @@ export function editedText(ctx: ToolContext, firstLine: string, done: { applied:
   const lines = [firstLine];
   if (project.version !== applied.version) lines.push(`The project has changed again since: it is now at version ${project.version}.`);
   const ids = newIdLines(applied.ops);
-  if (ids.length > 0) lines.push("New ids:", ...ids);
+  const shown = ids.slice(0, ctx.limits.connectorNewIdLines);
+  if (shown.length > 0) lines.push("New ids:", ...shown);
+  if (ids.length > shown.length) lines.push(`  … and ${ids.length - shown.length} more. Read the project to see them.`);
   lines.push(projectPage(project, { maxChars: ctx.limits.connectorEchoChars }).text);
   return lines.join("\n");
 }
