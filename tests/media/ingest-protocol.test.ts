@@ -5,18 +5,21 @@ import type { AssetProbe } from "@/lib/media/types";
 const VIDEO: AssetProbe = { kind: "video", durationMs: 12_500, width: 1080, height: 1920, fps: 30, hasAudio: true, videoCodec: "hevc" };
 const IMAGE: AssetProbe = { kind: "image", durationMs: null, width: 4032, height: 3024, fps: null, hasAudio: false, videoCodec: null };
 
-// A worker that only writes down what it is sent; the test delivers its answers.
+// A worker that only writes down what it is sent; the test delivers its answers, and says when it fails.
 function pretendWorker() {
   const posted: IngestRequest[] = [];
-  const listeners: ((event: { data: IngestEvent }) => void)[] = [];
+  const onMessage: ((event: { data: IngestEvent }) => void)[] = [];
+  const onError: (() => void)[] = [];
   let terminated = false;
   const worker: WorkerLike = {
     postMessage: (message) => void posted.push(message),
-    addEventListener: (_type, listener) => void listeners.push(listener),
+    addEventListener: (type: "message" | "error", listener: (event: { data: IngestEvent }) => void) =>
+      void (type === "message" ? onMessage.push(listener) : onError.push(listener as () => void)),
     terminate: () => void (terminated = true),
   };
-  const deliver = (event: IngestEvent) => listeners.forEach((listener) => listener({ data: event }));
-  return { worker, posted, deliver, terminated: () => terminated };
+  const deliver = (event: IngestEvent) => onMessage.forEach((listener) => listener({ data: event }));
+  const fail = () => onError.forEach((listener) => listener()); // its script did not load, or it broke
+  return { worker, posted, deliver, fail, terminated: () => terminated };
 }
 
 // One ingest on pretend workers: `workers` holds each one started, in order; ids are r1, r2, …
@@ -250,6 +253,96 @@ describe("talking to the ingest worker", () => {
     controller.abort();
     expect(start).toHaveBeenCalledTimes(1);
     expect(workers[0].posted.map((m) => m.type)).toEqual(["derive"]);
+  });
+
+  it("a worker that fails is terminated, and every request still waiting is rejected as WorkerFailed", async () => {
+    const { ingest, start, workers } = setup();
+    const controller = new AbortController();
+    const listened = vi.spyOn(controller.signal, "addEventListener");
+    const unlistened = vi.spyOn(controller.signal, "removeEventListener");
+    const onProgress = vi.fn();
+    const answered = ingest.probe(file("a"), "a.mp4");
+    const probe = ingest.probe(file("b"), "b.mp4");
+    const derived = ingest.derive(file("b"), VIDEO, onProgress, controller.signal);
+    workers[0].deliver({ type: "probed", id: "r1", probe: VIDEO });
+    expect(await outcome(probe)).toBe("pending");
+    expect(await outcome(derived)).toBe("pending");
+    expect(workers[0].terminated()).toBe(false);
+
+    workers[0].fail();
+    expect(workers[0].terminated()).toBe(true);
+    expect(await outcome(answered)).toEqual({ value: VIDEO }); // what was answered before stays answered
+    for (const lost of [probe, derived]) {
+      const { error } = (await outcome(lost)) as { error: Error };
+      expect(error).toBeInstanceOf(Error);
+      expect(error.name).toBe("WorkerFailed");
+    }
+    // The derive no longer listens to its signal, and an abort tells nobody.
+    expect(unlistened).toHaveBeenCalledWith("abort", listened.mock.calls[0][1]);
+    controller.abort();
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(workers[0].posted.map((m) => m.type)).toEqual(["probe", "probe", "derive"]);
+
+    // The failed worker is forgotten: the next request starts a new one, which cannot reach the old requests.
+    const next = ingest.probe(file("c"), "c.mp4");
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(workers[1].posted).toEqual([{ type: "probe", id: "r4", file: expect.any(Blob), fileName: "c.mp4" }]);
+    workers[1].deliver({ type: "progress", id: "r3", fraction: 0.5 });
+    expect(onProgress).not.toHaveBeenCalled();
+    workers[1].deliver({ type: "probed", id: "r4", probe: IMAGE });
+    expect(await next).toEqual(IMAGE);
+    const made = ingest.derive(file("c"), IMAGE, () => {}, new AbortController().signal);
+    expect(start).toHaveBeenCalledTimes(2);
+    workers[1].deliver({ type: "derived", id: "r5", preview: null, poster: null, previewProblem: null });
+    expect(await made).toEqual({ preview: null, poster: null, previewProblem: null });
+  });
+
+  it("a derive after a worker failed starts a new worker too", async () => {
+    const { ingest, start, workers } = setup();
+    const lost = ingest.probe(file("a"), "a.mp4");
+    workers[0].fail();
+    expect(await outcome(lost)).toMatchObject({ error: { name: "WorkerFailed" } });
+    void ingest.derive(file("a"), VIDEO, () => {}, new AbortController().signal);
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(workers[1].posted.map((m) => m.type)).toEqual(["derive"]);
+  });
+
+  it("an error from a worker that is no longer the current one ends nothing", async () => {
+    const { ingest, start, workers } = setup();
+    // One worker failed, one was disposed of: each is replaced, and each then reports an error once more.
+    const first = ingest.probe(file("a"), "a.mp4");
+    workers[0].fail();
+    expect(await outcome(first)).toMatchObject({ error: { name: "WorkerFailed" } });
+    const second = ingest.probe(file("b"), "b.mp4");
+    ingest.dispose();
+    expect(await outcome(second)).toMatchObject({ error: { name: "AbortError" } }); // dispose still says it was given up
+
+    const probe = ingest.probe(file("c"), "c.mp4");
+    const derived = ingest.derive(file("c"), VIDEO, () => {}, new AbortController().signal);
+    expect(start).toHaveBeenCalledTimes(3);
+    workers[0].fail();
+    workers[1].fail();
+    expect(workers[2].terminated()).toBe(false);
+    expect(await outcome(probe)).toBe("pending");
+    expect(await outcome(derived)).toBe("pending");
+
+    workers[2].deliver({ type: "probed", id: "r3", probe: VIDEO });
+    workers[2].deliver({ type: "derived", id: "r4", preview: null, poster: null, previewProblem: null });
+    expect(await probe).toEqual(VIDEO);
+    expect(await derived).toEqual({ preview: null, poster: null, previewProblem: null });
+    expect(start).toHaveBeenCalledTimes(3); // the same worker went on
+  });
+
+  it("a worker that fails with nothing waiting is replaced all the same", async () => {
+    const { ingest, start, workers } = setup();
+    const probe = ingest.probe(file("a"), "a.mp4");
+    workers[0].deliver({ type: "unreadable", id: "r1" });
+    expect(await probe).toBeNull();
+    workers[0].fail();
+    expect(workers[0].terminated()).toBe(true);
+    void ingest.probe(file("b"), "b.mp4");
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(workers[0].posted).toHaveLength(1);
   });
 
   it("gives each request its own id when none are supplied", () => {

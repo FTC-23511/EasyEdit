@@ -37,6 +37,8 @@ type Failure = { message: string; canRetry: boolean; network: boolean };
 
 const final = (message: string): Failure => ({ message, canRetry: false, network: false });
 const STOPPED: Failure = { message: MEDIA_MESSAGES.uploadStopped, canRetry: true, network: true };
+// The worker gave the read up. Its script may not have arrived, so this is tried again as a failure of the network is.
+const READ_STOPPED: Failure = { message: MEDIA_MESSAGES.readStopped, canRetry: true, network: true };
 const EXPIRED: Failure = { message: MEDIA_MESSAGES.uploadExpired, canRetry: true, network: false };
 
 // What a call that our server did not answer with success makes of the upload.
@@ -67,6 +69,7 @@ type Entry = {
   probe: AssetProbe | null; // what was read from the file, once it has been
   holdsPlace: boolean; // in steps 2 to 4
   ready: boolean; // the server has said the original is in
+  whole: boolean; // a try sent every byte and no answer said the upload is finished: a retry asks the server to finish it, before it opens anything
   network: boolean; // it is failed, and for the network
   left: "canceled" | "dropped" | null; // out of the list: canceled, or dismissed or stopped
   sends: AbortController; // ends the requests of the try that is running
@@ -115,6 +118,12 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
     entry.sends.abort();
     entry.derive?.stop.abort();
     release(entry);
+  }
+
+  // Takes a finished or failed row out of the list. The server is asked for nothing.
+  function dismissRow(entry: Entry) {
+    leave(entry, "dropped");
+    drop(entry);
   }
 
   function fail(entry: Entry, failure: Failure) {
@@ -168,28 +177,40 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
     return false;
   }
 
-  // Steps 2 to 5 for an entry that has a place. After every wait it looks whether the entry is still in the list.
-  async function run(entry: Entry, kind: AssetKind) {
-    const { file } = entry;
-
-    let probe = entry.probe;
-    if (!probe) {
-      change(entry, { stage: "reading" });
-      const read = await ingest.probe(file, file.name).catch(() => null); // it rejects only when the worker is ended
-      if (entry.left) return;
-      if (!read || !probeFits(kind, read)) return fail(entry, final(FILE_REFUSALS.unreadable));
-      probe = entry.probe = read;
+  // Step 4 again, for a retry of a try that sent every byte. The server may have finished that upload though its
+  // answer was lost, and opening one then would send the file a second time. Answers the asset when the original is
+  // in, "open" when the server says in its own words that there is nothing to finish, and null when the entry
+  // failed or has left.
+  async function completeAgain(entry: Entry, assetId: string): Promise<AssetView | "open" | null> {
+    change(entry, { stage: "finishing" });
+    const completed = await api.complete(assetId);
+    if (entry.left) return null;
+    if (completed.ok) return completed.asset;
+    if (completed.kind === "refused" && completed.message !== "") {
+      entry.whole = false;
+      return "open";
     }
+    fail(entry, failureOf(completed));
+    return null;
+  }
 
-    const sends = (entry.sends = new AbortController());
+  // Steps 3 and 4 for the original. Answers the asset once the server has said the file is in, and null when the
+  // entry failed or has left.
+  async function sendOriginal(entry: Entry, kind: AssetKind, probe: AssetProbe, sends: AbortController): Promise<AssetView | null> {
+    const { file } = entry;
+    const failed = (failure: Failure) => {
+      fail(entry, failure);
+      return null;
+    };
+
     change(entry, { stage: "uploading" });
     const opened = await api.open({ fileName: file.name, sizeBytes: file.size, mimeType: file.type, lastModifiedMs: file.lastModified, probe, event: deps.event() });
     if (entry.left) {
       // Canceled while the upload was being opened: only now is there an asset to remove.
       if (entry.left === "canceled" && opened.ok) void api.remove(opened.asset.id);
-      return;
+      return null;
     }
-    if (!opened.ok) return fail(entry, failureOf(opened));
+    if (!opened.ok) return failed(failureOf(opened));
     const assetId = opened.asset.id;
     change(entry, { assetId, sentBytes: opened.offset }); // a resumed row starts where the upload stopped
     if (kind !== "audio" && !entry.derive) startDerive(entry, probe);
@@ -212,24 +233,49 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
         return null;
       },
     });
-    if (entry.left) return;
+    if (entry.left) return null;
     // Refused: the server no longer has this upload (its session expired, or it was removed), so a retry opens a new one.
-    if (end.answer) return fail(entry, end.answer.kind === "refused" ? EXPIRED : failureOf(end.answer));
+    if (end.answer) return failed(end.answer.kind === "refused" ? EXPIRED : failureOf(end.answer));
     if (!sent.ok && sent.reason === "refused") {
       // Drive will not take this file in this session. The asset goes, as for a cancel, before the row says so:
       // choosing the file again then opens a new upload and does not go back to that session.
       const removed = await api.remove(assetId);
       if (removed.ok) change(entry, { assetId: null });
-      return fail(entry, final(MEDIA_MESSAGES.uploadRefused));
+      return failed(final(MEDIA_MESSAGES.uploadRefused));
     }
-    if (!sent.ok) return fail(entry, sent.reason === "expired" ? EXPIRED : STOPPED);
+    if (!sent.ok) return failed(sent.reason === "expired" ? EXPIRED : STOPPED);
 
     change(entry, { stage: "finishing", sentBytes: file.size }); // the answer to the last piece may have been lost
+    entry.whole = true;
     const completed = await api.complete(assetId);
-    if (entry.left) return;
-    if (!completed.ok) return fail(entry, failureOf(completed));
+    if (entry.left) return null;
+    if (!completed.ok) return failed(failureOf(completed));
+    return completed.asset;
+  }
+
+  // Steps 2 to 5 for an entry that has a place. After every wait it looks whether the entry is still in the list.
+  async function run(entry: Entry, kind: AssetKind) {
+    const { file } = entry;
+
+    let probe = entry.probe;
+    if (!probe) {
+      change(entry, { stage: "reading" });
+      // It rejects when the worker failed or was ended under the read, which says nothing about the file.
+      const read = await ingest.probe(file, file.name).catch(() => "given-up" as const);
+      if (entry.left) return;
+      if (read === "given-up") return fail(entry, READ_STOPPED);
+      if (!read || !probeFits(kind, read)) return fail(entry, final(FILE_REFUSALS.unreadable));
+      probe = entry.probe = read;
+    }
+
+    const sends = (entry.sends = new AbortController());
+    const before = entry.item.assetId;
+    let asset: AssetView | "open" | null = entry.whole && before !== null ? await completeAgain(entry, before) : "open";
+    if (asset === "open") asset = await sendOriginal(entry, kind, probe, sends);
+    if (!asset) return;
+    const assetId = asset.id;
     entry.ready = true;
-    deps.onAsset(completed.asset);
+    deps.onAsset(asset);
 
     // The original is in. What follows holds no place, so the next file starts while the copies are made and sent.
     release(entry);
@@ -268,7 +314,8 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
     }
   }
 
-  // Back in line, to start again at step 3: the server takes up the unfinished upload.
+  // Back in line, to start again at step 3: the server takes up the unfinished upload. One whose file was not read
+  // starts at step 2, and one that had sent every byte asks the server to finish it first.
   function again(entry: Entry) {
     entry.network = false;
     change(entry, { stage: "waiting", message: null, canRetry: false });
@@ -276,10 +323,20 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
 
   return {
     add(files) {
-      const before = entries.length;
+      let added = false;
       for (const file of files) {
         const sameFile = (entry: Entry) => entry.file.name === file.name && entry.file.size === file.size && entry.file.lastModified === file.lastModified;
-        if (entries.some((entry) => entry.item.stage !== "done" && sameFile(entry))) continue;
+        // The file's own row, unless that upload is done: a file that is in can be uploaded again.
+        const row = entries.find((entry) => entry.item.stage !== "done" && sameFile(entry));
+        if (row) {
+          if (row.item.stage !== "failed") continue; // waiting or on its way
+          if (row.item.canRetry) {
+            again(row); // choosing the file again is a retry
+            continue;
+          }
+          // It failed for good. The row goes, as when it is dismissed, and the file is taken as a new one.
+          dismissRow(row);
+        }
         const checked = checkFile({ name: file.name, sizeBytes: file.size });
         const item: UploadItem = {
           key: genKey(),
@@ -292,10 +349,10 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
           message: checked.ok ? null : FILE_REFUSALS[checked.reason],
           canRetry: false,
         };
-        entries = [...entries, { item, file, kind: checked.ok ? checked.kind : null, probe: null, holdsPlace: false, ready: false, network: false, left: null, sends: new AbortController(), derive: null }];
+        entries = [...entries, { item, file, kind: checked.ok ? checked.kind : null, probe: null, holdsPlace: false, ready: false, whole: false, network: false, left: null, sends: new AbortController(), derive: null }];
+        added = true;
       }
-      if (entries.length === before) return;
-      emit();
+      if (added) emit();
       startWaiting();
     },
 
@@ -331,8 +388,7 @@ export function createUploadQueue(deps: QueueDeps): UploadQueue {
     dismiss(key) {
       const entry = find(key);
       if (!entry || (entry.item.stage !== "done" && entry.item.stage !== "failed")) return;
-      leave(entry, "dropped");
-      drop(entry);
+      dismissRow(entry);
       emit();
     },
 

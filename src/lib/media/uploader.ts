@@ -53,7 +53,7 @@ export function createDriveTransport(fetchFn?: typeof fetch): UploadTransport {
   };
 }
 
-// The wait before asking again, by the number of failures since the last piece that got through.
+// The wait before asking again, by the number of failures since bytes last reached storage.
 export const PIECE_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000] as const; // not the editor's RETRY_DELAYS_MS in src/lib/editor/sync.ts
 
 export type SendDeps = {
@@ -76,7 +76,7 @@ export async function sendFile(file: Blob, opened: { uploadUrl: string; offset: 
   const { transport, askOffset, sleep, chunkBytes, signal, onProgress } = deps;
   const total = file.size;
   let offset = opened.offset; // the first byte storage does not hold
-  let failures = 0; // since the last piece that got through
+  let failures = 0; // since bytes last reached storage
 
   for (;;) {
     if (signal.aborted) return CANCELED;
@@ -98,6 +98,8 @@ export async function sendFile(file: Blob, opened: { uploadUrl: string; offset: 
       if (held.done) return SENT;
       // Every byte was sent, or storage holds as many as the file has, and still the file is not whole.
       if (offset >= total || held.offset >= total) return GAVE_UP;
+      // The piece that failed began at `offset`. Storage holding more than that took some of it, so the link works.
+      if (held.offset > offset) failures = 0;
       offset = held.offset;
     }
 

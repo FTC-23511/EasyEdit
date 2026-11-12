@@ -70,6 +70,8 @@ function failureFor(status: number, body: unknown): MediaFailure {
   if (status === 403) return { ok: false, kind: "forbidden", message: sentence };
   if (status === 503 && code === "MEDIA_NOT_SET_UP") return { ok: false, kind: "not-set-up", message: sentence };
   if (status === 502) return { ok: false, kind: "storage", message: sentence };
+  // The server, or something between it and the page, failed: the same request may work a moment later.
+  if (status >= 500) return NETWORK;
   return { ok: false, kind: "refused", message: sentence };
 }
 

@@ -39,6 +39,7 @@ export const MEDIA_MESSAGES = {
   storageDown: "Google Drive didn't answer. Try again.",
   // What an upload's row says when it stopped, or when it is done and has no preview copy.
   uploadStopped: "Upload stopped. Check your connection, then retry.",
+  readStopped: "Couldn't read this file just now. Retry.",
   uploadExpired: "This upload expired. Retry to start it again.",
   uploadRefused: "Google Drive refused this upload. Tell an admin.",
   signedOut: "You're signed out. Sign in again, then retry.",

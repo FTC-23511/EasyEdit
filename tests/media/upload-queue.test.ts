@@ -21,6 +21,7 @@ const SENTENCES = {
   noPreviewHere: "No preview: this browser can't read this video. It can still be used in projects.",
   noPreview: "The preview couldn't be made. The file can still be used in projects.",
   unreadable: "This file couldn't be read. It may be damaged.",
+  readStopped: "Couldn't read this file just now. Retry.",
 };
 
 const videoFile = (name = "IMG_4821.MOV", sizeBytes = 20_000_000) => new File([new Uint8Array(sizeBytes)], name, { type: "video/quicktime", lastModified: 1_762_800_000_000 });
@@ -162,6 +163,11 @@ async function harness(options: Options = {}) {
 
 const outcome = ({ stage, message, canRetry }: UploadItem) => ({ stage, message, canRetry });
 const failure = (kind: MediaFailure["kind"], message = ""): MediaFailure => ({ ok: false, kind, message });
+// What a request to the worker rejects with: the worker failed under it, or was ended.
+const workerFailed = () => Object.assign(new Error("The worker failed."), { name: "WorkerFailed" });
+const workerEnded = () => new DOMException("The request was canceled.", "AbortError");
+// The stages the first row went through in these changes, each named once per time it was entered.
+const stagesIn = (changes: UploadItem[][]) => changes.flatMap((items) => items.slice(0, 1).map((item) => item.stage)).filter((stage, index, all) => stage !== all[index - 1]);
 
 describe("one upload, start to finish", () => {
   it("reads, uploads, completes, then sends the preview copy and the still picture", async () => {
@@ -359,17 +365,137 @@ describe("a file that is not taken", () => {
     expect(await h.assetCount()).toBe(5);
   });
 
-  it("a file whose upload failed is not taken again while its row is there", async () => {
+  it("choosing a file whose upload failed and can be retried retries that row", async () => {
     const h = await harness();
     h.net.down = true;
+    h.queue.add([videoFile("a.mov"), videoFile("b.mov")]);
+    await settled(h.queue);
+    const [a, b] = h.queue.items();
+    expect([a, b].map(outcome)).toEqual([
+      { stage: "failed", message: SENTENCES.stopped, canRetry: true },
+      { stage: "failed", message: SENTENCES.stopped, canRetry: true },
+    ]);
+    h.net.down = false;
+    h.queue.add([videoFile("a.mov")]);
+    // What retry(key) does: the same row, back at step 3 at once, with its asset. No other row is touched.
+    expect(h.queue.items().map((item) => [item.key, item.stage])).toEqual([[a.key, "uploading"], [b.key, "failed"]]);
+    expect(h.queue.items()[0]).toMatchObject({ message: null, canRetry: false, assetId: a.assetId });
+    const told = h.changes.length;
+    h.queue.add([videoFile("a.mov")]); // on its way again: nothing happens
+    expect(h.changes).toHaveLength(told);
+    h.queue.add([videoFile("b.mov"), videoFile("c.mov", SMALL)]); // with a file that is new
+    expect(h.queue.items().map((item) => [item.fileName, item.stage])).toEqual([["a.mov", "uploading"], ["b.mov", "uploading"], ["c.mov", "waiting"]]);
+    await settled(h.queue);
+    expect(h.queue.items().map((item) => [item.key, item.stage])).toEqual([[a.key, "done"], [b.key, "done"], [expect.any(String), "done"]]);
+    expect(h.probed).toEqual(["a.mov", "b.mov", "c.mov"]); // not read again
+    expect(h.originals()).toBe(3); // one for each file
+    expect(await h.assetCount()).toBe(3);
+  });
+
+  it("choosing it again retries a row that failed for another reason than the network, and waits for a place like any retry", async () => {
+    let signedOut = true;
+    const reading = gate<AssetProbe | null>();
+    const h = await harness({
+      options: { parallel: 1 },
+      probe: (fileName) => (fileName === "b.mov" ? reading.opened : Promise.resolve(VIDEO.probe)),
+      api: (real) => ({ open: async (input) => (signedOut ? failure("signed-out", "Sign in to continue.") : real.open(input)) }),
+    });
+    h.queue.add([videoFile("a.mov", SMALL), videoFile("b.mov", SMALL)]);
+    await until(() => h.stageOf(0) === "failed" && h.stageOf(1) === "reading", "the first to fail and the second to start");
+    const failed = h.queue.items()[0];
+    expect(outcome(failed)).toEqual({ stage: "failed", message: SENTENCES.signedOut, canRetry: true });
+    signedOut = false;
+    h.queue.add([videoFile("a.mov", SMALL)]);
+    expect(h.queue.items().map((item) => [item.key, item.stage])).toEqual([[failed.key, "waiting"], [expect.any(String), "reading"]]); // the one place is taken
+    reading.open(VIDEO.probe);
+    await settled(h.queue);
+    expect(h.queue.items().map((item) => item.stage)).toEqual(["done", "done"]);
+    expect(h.probed).toEqual(["a.mov", "b.mov"]);
+  });
+
+  it("choosing a file whose row failed for good drops that row and takes the file as new", async () => {
+    let full = true;
+    const h = await harness({
+      api: (real) => ({
+        open: async (input) => (full && input.fileName === "a.mov" ? failure("refused", "You have 20 unfinished uploads. Finish or cancel one first.") : real.open(input)),
+      }),
+    });
+    h.queue.add([videoFile("a.mov", SMALL), audioFile()]);
+    await settled(h.queue);
+    const [failed, done] = h.queue.items();
+    expect(outcome(failed)).toEqual({ stage: "failed", message: "You have 20 unfinished uploads. Finish or cancel one first.", canRetry: false });
+    full = false;
+    const asked = h.calls.length;
+    const told = h.changes.length;
+    h.queue.add([videoFile("a.mov", SMALL)]);
+    // The old row is gone, as after dismiss, and the file is a new row at the end of the list, read from its start.
+    expect(h.queue.items().map((item) => [item.fileName, item.stage])).toEqual([["theme.mp3", "done"], ["a.mov", "reading"]]);
+    expect(h.queue.items()[0].key).toBe(done.key);
+    expect(h.queue.items()[1].key).not.toBe(failed.key);
+    expect(h.queue.items()[1]).toMatchObject({ sentBytes: 0, assetId: null, message: null, canRetry: false });
+    expect(h.changes.slice(told).map((items) => items.map((item) => item.stage))).toEqual([["done", "waiting"], ["done", "reading"]]); // no list without the file in between
+    expect(h.calls).toHaveLength(asked); // dropping the row asks the server for nothing
+    await settled(h.queue);
+    expect(h.queue.items().map((item) => item.stage)).toEqual(["done", "done"]);
+    expect(h.probed).toEqual(["a.mov", "theme.mp3", "a.mov"]);
+    expect(h.called("remove")).toEqual([]);
+    expect(await h.assetCount()).toBe(2);
+  });
+
+  it("a file that was refused before anything was sent is checked again when it is chosen again, in one row", async () => {
+    let readable = false;
+    const h = await harness({ probe: async (fileName) => (readable ? probeOf(fileName) : null) });
+    const empty = () => new File([], "empty.mp4", { lastModified: 1_762_800_000_000 }); // the same file each time it is chosen
+    h.queue.add([empty(), videoFile("a.mov", SMALL)]);
+    await settled(h.queue);
+    const before = h.queue.items();
+    expect(before.map(outcome)).toEqual([
+      { stage: "failed", message: "This file is empty.", canRetry: false },
+      { stage: "failed", message: SENTENCES.unreadable, canRetry: false },
+    ]);
+    readable = true;
+    h.queue.add([empty(), videoFile("a.mov", SMALL)]);
+    await settled(h.queue);
+    expect(h.queue.items().map(outcome)).toEqual([
+      { stage: "failed", message: "This file is empty.", canRetry: false },
+      { stage: "done", message: null, canRetry: false },
+    ]);
+    for (const item of h.queue.items()) expect(before.map((old) => old.key)).not.toContain(item.key);
+    expect(h.probed).toEqual(["a.mov", "a.mov"]); // read again
+  });
+
+  it("a row that failed for good with its asset still on the server is dropped without a word to the server", async () => {
+    const h = await harness({ api: () => ({ remove: async () => failure("network") }) });
+    h.ctx.fake.failNext(/^PUT .*upload_id=/, 403);
     h.queue.add([videoFile()]);
     await settled(h.queue);
+    const failed = h.queue.items()[0];
+    expect(outcome(failed)).toEqual({ stage: "failed", message: SENTENCES.refused, canRetry: false });
+    expect(failed.assetId).not.toBeNull();
+    const asked = h.calls.length;
     h.queue.add([videoFile()]);
     expect(h.queue.items()).toHaveLength(1);
-    h.queue.dismiss(h.queue.items()[0].key);
+    expect(h.queue.items()[0]).toMatchObject({ stage: "reading", assetId: null });
+    expect(h.calls).toHaveLength(asked); // as dismiss: nothing is removed
+    await settled(h.queue);
+    expect(h.queue.items()[0]).toMatchObject({ stage: "done", assetId: failed.assetId }); // the server took up the upload it still held
+    expect(h.called("remove")).toHaveLength(1);
+    expect(h.originals()).toBe(1);
+    expect(await h.assetCount()).toBe(1);
+  });
+
+  it("after Drive refused a piece, choosing the file again opens a new upload", async () => {
+    const h = await harness();
+    h.ctx.fake.failNext(/^PUT .*upload_id=/, 403);
+    h.queue.add([videoFile()]);
+    await settled(h.queue);
+    expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message: SENTENCES.refused, canRetry: false });
     h.queue.add([videoFile()]);
     expect(h.queue.items().map((item) => item.stage)).toEqual(["reading"]);
-    h.queue.stop();
+    await settled(h.queue);
+    expect(h.queue.items()[0]).toMatchObject({ stage: "done", message: null });
+    expect(h.originals()).toBe(2); // the refused session is not gone back to
+    expect(await h.assetCount()).toBe(1);
   });
 });
 
@@ -557,16 +683,230 @@ describe("an upload that fails", () => {
         expect(h.called("complete")).toHaveLength(call === "complete" ? 1 : 0);
 
         failing = false;
+        const retried = call === "complete" ? "finishing" : "uploading"; // a try that sent every byte asks the server to finish it, before anything is opened
         h.queue.resume();
-        expect(h.stageOf()).toBe(resumed ? "uploading" : "failed");
+        expect(h.stageOf()).toBe(resumed ? retried : "failed");
         if (!resumed) h.queue.retry(h.queue.items()[0].key);
-        expect(h.stageOf()).toBe(canRetry ? "uploading" : "failed");
+        expect(h.stageOf()).toBe(canRetry ? retried : "failed");
         await settled(h.queue);
         expect(h.stageOf()).toBe(canRetry ? "done" : "failed");
-        expect(h.originals()).toBe(call === "complete" || canRetry ? 1 : 0); // a retry after the last byte takes up the upload that is whole
+        expect(h.originals()).toBe(call === "complete" || canRetry ? 1 : 0);
+        expect(h.called("open")).toHaveLength(call === "open" && canRetry ? 2 : 1); // after the last byte nothing is opened again
       });
     }
   }
+
+  // The server finished the upload, and its answer did not reach the page.
+  for (const how of ["retry", "resume"] as const) {
+    it(`a lost answer to complete, then ${how}: the server is asked to finish it again, and the file is not uploaded twice`, async () => {
+      let lost = true;
+      const h = await harness({
+        api: (real) => ({
+          complete: async (assetId) => {
+            const answer = await real.complete(assetId);
+            if (!lost) return answer;
+            lost = false;
+            return failure("network");
+          },
+        }),
+      });
+      h.queue.add([videoFile()]);
+      await settled(h.queue);
+      const failed = h.queue.items()[0];
+      expect(outcome(failed)).toEqual({ stage: "failed", message: SENTENCES.stopped, canRetry: true });
+      const told = h.changes.length;
+      if (how === "retry") h.queue.retry(failed.key);
+      else h.queue.resume();
+      expect(h.queue.items()[0]).toMatchObject({ stage: "finishing", message: null, canRetry: false, sentBytes: 20_000_000, assetId: failed.assetId });
+      await settled(h.queue);
+      expect(h.queue.items()[0]).toMatchObject({ stage: "done", message: null, assetId: failed.assetId });
+      expect(stagesIn(h.changes.slice(told))).toEqual(["waiting", "finishing", "preview", "done"]); // on at step 5, as after any complete
+      expect(h.calls.map(([name]) => name)).toEqual(["open", "complete", "complete", "openFile", "completeFile", "openFile", "completeFile"]);
+      expect(h.called("complete").map(([, assetId]) => assetId)).toEqual([failed.assetId, failed.assetId]);
+      expect(h.originals()).toBe(1);
+      expect(await h.assetCount()).toBe(1);
+      expect((await listAssets(h.ctx.db, h.ctx.grace))[0]).toMatchObject({ status: "ready", previewStatus: "ready" });
+      expect(h.seen.map(({ status, previewStatus }) => [status, previewStatus])).toEqual([["ready", "pending"], ["ready", "ready"], ["ready", "ready"]]); // the editor is told as after any complete
+      expect(h.derives).toHaveLength(1);
+    });
+  }
+
+  it("when that complete is refused in the server's words, the retry opens the upload as any retry does, and the next one starts there", async () => {
+    const completes: MediaFailure[] = [failure("network"), failure("refused", "The upload is not finished.")]; // then the server's own answers
+    const opens: (MediaFailure | null)[] = [null, failure("network")]; // null, and after these: the server's own answer
+    const h = await harness({
+      api: (real) => ({
+        complete: async (assetId) => completes.shift() ?? real.complete(assetId),
+        open: async (input) => opens.shift() ?? real.open(input),
+      }),
+    });
+    h.queue.add([videoFile()]);
+    await settled(h.queue);
+    expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message: SENTENCES.stopped, canRetry: true });
+    const { key } = h.queue.items()[0];
+
+    let told = h.changes.length;
+    h.queue.retry(key);
+    expect(h.stageOf()).toBe("finishing");
+    await settled(h.queue);
+    expect(stagesIn(h.changes.slice(told))).toEqual(["waiting", "finishing", "uploading", "failed"]); // refused, so on at step 3, where the connection failed
+    expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message: SENTENCES.stopped, canRetry: true });
+    expect(h.calls.map(([name]) => name)).toEqual(["open", "complete", "complete", "open"]);
+
+    // That try did not get as far as finishing, so this one is a retry like any other.
+    told = h.changes.length;
+    h.queue.retry(key);
+    expect(h.stageOf()).toBe("uploading");
+    await settled(h.queue);
+    expect(stagesIn(h.changes.slice(told))).toEqual(["waiting", "uploading", "finishing", "preview", "done"]);
+    expect(h.calls.map(([name]) => name)).toEqual(["open", "complete", "complete", "open", "open", "offset", "complete", "openFile", "completeFile", "openFile", "completeFile"]);
+    expect(h.originals()).toBe(1); // the server took up the upload that was whole
+    expect(await h.assetCount()).toBe(1);
+  });
+
+  // Anything but the asset or the server's own refusal: the row fails again, and nothing is opened.
+  const COMPLETE_AGAIN: { answer: MediaFailure; message: string; canRetry: boolean }[] = [
+    { answer: failure("network"), message: SENTENCES.stopped, canRetry: true },
+    { answer: failure("storage", SENTENCES.storageDown), message: SENTENCES.storageDown, canRetry: true },
+    { answer: failure("signed-out", "Sign in to continue."), message: SENTENCES.signedOut, canRetry: true },
+    { answer: failure("forbidden", "You don't have access."), message: SENTENCES.lostAccess, canRetry: true },
+    { answer: failure("not-set-up", "Uploads are not set up yet."), message: "Uploads are not set up yet.", canRetry: false },
+    { answer: failure("refused"), message: SENTENCES.stopped, canRetry: true }, // a page from something in between
+  ];
+
+  for (const { answer, message, canRetry } of COMPLETE_AGAIN) {
+    it(`a retry after the last byte whose complete is answered ${answer.kind}${answer.message ? "" : " without a sentence"} fails again and opens no second upload`, async () => {
+      const completes: MediaFailure[] = [failure("network"), answer]; // then the server's own answers
+      const h = await harness({ api: (real) => ({ complete: async (assetId) => completes.shift() ?? real.complete(assetId) }) });
+      h.queue.add([videoFile("a.mov", SMALL)]);
+      await settled(h.queue);
+      const { key } = h.queue.items()[0];
+      const told = h.changes.length;
+      h.queue.retry(key);
+      expect(h.stageOf()).toBe("finishing");
+      await settled(h.queue);
+      expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message, canRetry });
+      expect(stagesIn(h.changes.slice(told))).toEqual(["waiting", "finishing", "failed"]);
+      expect(h.calls.map(([name]) => name)).toEqual(["open", "complete", "complete"]);
+      expect(h.originals()).toBe(1);
+
+      // The next retry asks the server to finish it once more.
+      h.queue.retry(key);
+      expect(h.stageOf()).toBe(canRetry ? "finishing" : "failed");
+      await settled(h.queue);
+      expect(h.stageOf()).toBe(canRetry ? "done" : "failed");
+      expect(h.called("open")).toHaveLength(1);
+      expect(h.called("complete")).toHaveLength(canRetry ? 3 : 2);
+      expect(h.originals()).toBe(1);
+      expect(await h.assetCount()).toBe(1);
+    });
+  }
+
+  it("a retry after the last byte that is canceled while the server is asked goes no further", async () => {
+    const reached = gate();
+    const held = gate();
+    let lost = true;
+    const h = await harness({
+      api: (real) => ({
+        complete: async (assetId) => {
+          const answer = await real.complete(assetId);
+          if (lost) {
+            lost = false;
+            return failure("network");
+          }
+          reached.open();
+          await held.opened;
+          return answer;
+        },
+      }),
+    });
+    h.queue.add([videoFile("a.mov", SMALL)]);
+    await settled(h.queue);
+    h.queue.retry(h.queue.items()[0].key);
+    await reached.opened;
+    h.queue.stop();
+    const before = { calls: h.calls.length, seen: h.seen.length, told: h.changes.length };
+    held.open();
+    await aWhile();
+    expect({ calls: h.calls.length, seen: h.seen.length, told: h.changes.length }).toEqual(before);
+  });
+
+  // The worker failed under the read, or was ended while the upload is still wanted: its script may not have arrived.
+  for (const [why, rejection] of [["the worker failed", workerFailed], ["the worker was ended", workerEnded]] as const) {
+    it(`a read that is given up because ${why} can be retried, and the retry reads the file again`, async () => {
+      let failing = true;
+      const h = await harness({
+        probe: async (fileName) => {
+          if (failing) throw rejection();
+          return probeOf(fileName);
+        },
+      });
+      h.queue.add([videoFile("a.mov", SMALL)]);
+      await settled(h.queue);
+      expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message: SENTENCES.readStopped, canRetry: true });
+      expect(h.stages()).toEqual(["waiting", "reading", "failed"]);
+      expect(h.calls).toEqual([]);
+
+      h.queue.retry(h.queue.items()[0].key); // the worker still fails
+      expect(outcome(h.queue.items()[0])).toEqual({ stage: "reading", message: null, canRetry: false });
+      await settled(h.queue);
+      expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message: SENTENCES.readStopped, canRetry: true });
+
+      failing = false;
+      h.queue.retry(h.queue.items()[0].key);
+      await settled(h.queue);
+      expect(h.queue.items()[0]).toMatchObject({ stage: "done", message: null });
+      expect(h.probed).toEqual(["a.mov", "a.mov", "a.mov"]);
+      expect(await h.assetCount()).toBe(1);
+    });
+  }
+
+  it("resume retries a read that was given up, as it does a network failure, and it makes room meanwhile", async () => {
+    let failing = true;
+    const h = await harness({
+      options: { parallel: 1 },
+      probe: async (fileName) => {
+        if (failing && fileName !== "c.mov") throw workerFailed();
+        return probeOf(fileName);
+      },
+    });
+    h.queue.add([videoFile("a.mov", SMALL), videoFile("b.mov", SMALL), videoFile("c.mov", SMALL)]);
+    await settled(h.queue);
+    expect(h.queue.items().map(outcome)).toEqual([
+      { stage: "failed", message: SENTENCES.readStopped, canRetry: true },
+      { stage: "failed", message: SENTENCES.readStopped, canRetry: true },
+      { stage: "done", message: null, canRetry: false },
+    ]);
+    failing = false;
+    h.queue.resume();
+    expect(h.queue.items().map((item) => item.stage)).toEqual(["reading", "waiting", "done"]);
+    await settled(h.queue);
+    expect(h.queue.items().map((item) => item.stage)).toEqual(["done", "done", "done"]);
+    expect(h.probed).toEqual(["a.mov", "b.mov", "c.mov", "a.mov", "b.mov"]);
+  });
+
+  it("a read given up for a row that was canceled changes nothing for it, and fails the row that is still wanted", async () => {
+    const reading = gate<AssetProbe | null>();
+    const h = await harness({ probe: () => reading.opened });
+    h.queue.add([videoFile("a.mov", SMALL), videoFile("b.mov", SMALL)]);
+    h.queue.cancel(h.queue.items()[0].key);
+    const told = h.changes.length;
+    reading.fail(workerFailed());
+    await aWhile();
+    expect(h.queue.items().map(outcome)).toEqual([{ stage: "failed", message: SENTENCES.readStopped, canRetry: true }]); // b.mov, which is still wanted
+    expect(h.changes).toHaveLength(told + 1); // and that is all that was said
+    expect(h.calls).toEqual([]);
+  });
+
+  it("a preview copy lost to a worker that failed is recorded as one that could not be made", async () => {
+    const h = await harness({ derive: async () => Promise.reject(workerFailed()) });
+    h.queue.add([videoFile("a.mov", SMALL)]);
+    await settled(h.queue);
+    expect(outcome(h.queue.items()[0])).toEqual({ stage: "done", message: SENTENCES.noPreview, canRetry: false });
+    expect(h.called("previewFailed")).toHaveLength(1);
+    expect(h.called("openFile")).toEqual([]);
+    expect((await listAssets(h.ctx.db, h.ctx.grace))[0]).toMatchObject({ status: "ready", previewStatus: "failed", previewFileId: null, posterFileId: null });
+  });
 
   it("a session that expired can be retried, and the retry opens a new upload", async () => {
     const h = await harness({
@@ -1110,12 +1450,5 @@ describe("cancel, dismiss and stop", () => {
     h.queue.add([videoFile("b.mov", SMALL), videoFile("c.mov", SMALL)]);
     expect(h.queue.items().map((item) => item.stage)).toEqual(["reading", "waiting"]);
     h.queue.stop();
-  });
-
-  it("a file being read when the worker ends, with the upload still wanted, fails as one that cannot be read", async () => {
-    const h = await harness({ probe: () => Promise.reject(new DOMException("The request was canceled.", "AbortError")) });
-    h.queue.add([videoFile()]);
-    await settled(h.queue);
-    expect(outcome(h.queue.items()[0])).toEqual({ stage: "failed", message: SENTENCES.unreadable, canRetry: false });
   });
 });

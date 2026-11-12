@@ -337,6 +337,65 @@ describe("sending a file, rule by rule", () => {
     expect(fifth.state.log.filter((entry) => entry.startsWith("wait"))).toEqual(["wait 1000", "wait 2000", "wait 4000", "wait 8000", "wait 16000"]);
   });
 
+  // A link that keeps `keep(n)` bytes of its nth piece and then fails, every time.
+  function dropping(keep: (nth: number) => number) {
+    const made = pretend();
+    let sent = 0;
+    made.deps.transport = {
+      sendPiece: async ({ piece, start }) => {
+        made.state.log.push(`piece ${start}+${piece.size}`);
+        if (start === made.state.held) made.state.held += Math.min(keep(++sent), piece.size);
+        throw new PieceError("network");
+      },
+    };
+    return made;
+  }
+
+  it("a link that drops every piece part way finishes the file, as long as each try lands something", async () => {
+    const { state, send } = dropping(() => 1); // one byte of every piece arrives: ten failed pieces for ten bytes
+    expect(await send()).toEqual({ ok: true });
+    const again = ["wait 1000", "ask"]; // bytes arrived, so the wait does not grow
+    expect(state.log).toEqual(Array.from({ length: 10 }, (_, at) => [`piece ${at}+${Math.min(4, 10 - at)}`, ...again]).flat());
+    expect(state.held).toBe(10);
+  });
+
+  it("failures count on while the server's offset stands still, and start over when it rose", async () => {
+    // Two bytes of the first piece arrive. After that nothing does.
+    const still = dropping((nth) => (nth === 1 ? 2 : 0));
+    expect(await still.send()).toEqual({ ok: false, reason: "gave-up" });
+    const again = ["ask", "piece 2+4"];
+    expect(still.state.log).toEqual([
+      "piece 0+4", "wait 1000", ...again, // the offset rose from 0 to 2: the count starts over
+      "wait 1000", ...again, "wait 2000", ...again, "wait 4000", ...again, "wait 8000", ...again, "wait 16000", ...again, // it stands at 2: the sixth failure in a row ends it
+    ]);
+    expect(still.state.progress).toEqual([]);
+
+    // Bytes that arrive after the count has grown start it over as well.
+    const late = dropping((nth) => (nth === 3 ? 1 : 0));
+    expect(await late.send()).toEqual({ ok: false, reason: "gave-up" });
+    expect(late.state.log.filter((entry) => entry.startsWith("wait"))).toEqual(
+      ["wait 1000", "wait 2000", "wait 4000", "wait 1000", "wait 2000", "wait 4000", "wait 8000", "wait 16000"],
+    );
+
+    // An offset that is behind where the failed piece began is not bytes that arrived.
+    const behind = pretend(Array.from({ length: 6 }, () => "network" as const));
+    behind.state.held = 2;
+    expect(await behind.send(4)).toEqual({ ok: false, reason: "gave-up" });
+    expect(behind.state.log.filter((entry) => entry.startsWith("wait"))).toEqual(["wait 1000", "wait 2000", "wait 4000", "wait 8000", "wait 16000"]);
+  });
+
+  it("a server that could not be asked at first still shows that bytes arrived", async () => {
+    let unanswered = 1;
+    const { state, deps, send } = dropping((nth) => (nth === 1 ? 2 : 4));
+    const ask = deps.askOffset;
+    deps.askOffset = async () => (unanswered-- > 0 ? (state.log.push("ask: no answer"), null) : ask());
+    expect(await send()).toEqual({ ok: true });
+    expect(state.log).toEqual([
+      "piece 0+4", "wait 1000", "ask: no answer", "wait 2000", "ask", // the offset rose since that piece began
+      "piece 2+4", "wait 1000", "ask", "piece 6+4", "wait 1000", "ask",
+    ]);
+  });
+
   it("finds out by asking that the last piece arrived when its answer was lost", async () => {
     const { state, send } = pretend([{ keep: 4 }, { keep: 4 }, "lost"]);
     expect(await send()).toEqual({ ok: true });
@@ -492,6 +551,22 @@ describe("sending a file, rule by rule", () => {
     expect(sleeps).toEqual([1000]);
     expect(progress).toEqual([8 * MiB, 16 * MiB]);
     expect(pieces()).toHaveLength(4); // three pieces and the server's question
+    expect(ctx.fake.sessions.get(opened.uploadUrl)!.received).toBe(SIZE);
+  });
+
+  it("a link that drops every piece after 3 MiB gets the whole file to the pretend Drive", async () => {
+    const { ctx, opened, deps, sleeps } = await setup();
+    let sent = 0;
+    const dropping: UploadTransport = {
+      sendPiece: async (input) => {
+        sent += 1;
+        ctx.fake.dropNextPieceAfter(3 * MiB);
+        return deps.transport.sendPiece(input);
+      },
+    };
+    expect(await sendFile(file(), opened, { ...deps, transport: dropping })).toEqual({ ok: true });
+    expect(sent).toBe(7); // six pieces that left 3 MiB each, and the rest
+    expect(sleeps).toEqual([1000, 1000, 1000, 1000, 1000, 1000, 1000]);
     expect(ctx.fake.sessions.get(opened.uploadUrl)!.received).toBe(SIZE);
   });
 });

@@ -92,9 +92,9 @@ describe("the browser's media API client", () => {
   it("503 with MEDIA_NOT_SET_UP is not set up", async () => {
     expect(NOT_SET_UP_BODY.code).toBe("MEDIA_NOT_SET_UP");
     expect(await everyCall(() => json(503, NOT_SET_UP_BODY))).toEqual(all({ ok: false, kind: "not-set-up", message: "Uploads are not set up yet." }));
-    // Any other 503 is not ours to explain.
-    expect(await everyCall(() => json(503, { code: "BUSY", message: "Try later." }))).toEqual(all({ ok: false, kind: "refused", message: "Try later." }));
-    expect(await everyCall(() => page(503))).toEqual(all({ ok: false, kind: "refused", message: "" }));
+    // Any other 503 is a server that failed, not one that is not set up.
+    expect(await everyCall(() => json(503, { code: "BUSY", message: "Try later." }))).toEqual(all({ ok: false, kind: "network", message: "" }));
+    expect(await everyCall(() => page(503))).toEqual(all({ ok: false, kind: "network", message: "" }));
     // And the code means nothing under another status.
     expect(await everyCall(() => json(400, NOT_SET_UP_BODY))).toEqual(all({ ok: false, kind: "refused", message: "Uploads are not set up yet." }));
   });
@@ -104,16 +104,29 @@ describe("the browser's media API client", () => {
     expect(await everyCall(() => page(502))).toEqual(all({ ok: false, kind: "storage", message: "" }));
   });
 
+  // The server, or something between it and the page, failed: the same request may work a moment later.
+  it.each([
+    [500, INTERNAL_BODY],
+    [500, null],
+    [501, { code: "NOT_IMPLEMENTED", message: "Not here." }],
+    [503, { code: "BUSY", message: "Try later." }],
+    [504, null],
+    [504, NOT_SET_UP_BODY], // the code means "not set up" under 503 only
+    [599, { message: "Timed out." }],
+  ])("a server error can be tried again: it is a network failure, with no sentence (%i %j)", async (status, body) => {
+    expect(await everyCall(() => (body === null ? page(status) : json(status, body)))).toEqual(all({ ok: false, kind: "network", message: "" }));
+  });
+
   it.each([
     [400, { code: "INVALID", message: "This file is empty." }, "This file is empty."],
     [400, { code: "LIMIT_EXCEEDED", message: "You have 20 unfinished uploads. Finish or cancel one first." }, "You have 20 unfinished uploads. Finish or cancel one first."],
     [404, { code: "NOT_FOUND", message: "That file is no longer in the library." }, "That file is no longer in the library."],
     [409, { code: "CONFLICT", message: "This upload expired. Choose the file again." }, "This upload expired. Choose the file again."],
-    [500, INTERNAL_BODY, "Something went wrong. Try again."],
     [429, { code: "SLOW_DOWN" }, ""], // no sentence
     [400, { code: "INVALID", message: 7 }, ""], // not a sentence
     [405, ["message"], ""],
-    [504, null, ""],
+    [404, null, ""],
+    [499, { code: "INTERNAL", message: "Something went wrong. Try again." }, "Something went wrong. Try again."], // the last status that is not a server error
   ])("any other refusal is refused, with the server's sentence (%i %j)", async (status, body, message) => {
     expect(await everyCall(() => (body === null ? page(status) : json(status, body)))).toEqual(all({ ok: false, kind: "refused", message }));
   });
