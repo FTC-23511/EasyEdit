@@ -1,9 +1,11 @@
 import { nanoid } from "nanoid";
 import type { DB } from "@/db";
 import { assets, user } from "@/db/schema";
+import type { CurrentUser } from "@/lib/access-rules";
 import type { Actor } from "@/lib/actor";
 import { createDriveClient } from "@/lib/drive/client";
 import { LIMITS } from "@/lib/limits";
+import { makeMediaHandlers, makeReadTokenHandler, type AssetRouteContext, type MediaHandlerDeps } from "@/lib/media/handlers";
 import { completeUpload, openUpload, type MediaDeps } from "@/lib/media/service";
 import type { AssetView, OpenUploadInput } from "@/lib/media/types";
 import { makeTestDb } from "../helpers/db";
@@ -34,6 +36,8 @@ export const AUDIO: OpenUploadInput = {
   probe: { kind: "audio", durationMs: 95_000, width: null, height: null, fps: null, hasAudio: true, videoCodec: null },
 };
 
+const APP_ORIGIN = "https://app.test"; // where the app is served in tests
+
 export type MediaContext = { db: DB; fake: FakeDrive; deps: MediaDeps; ada: Actor; grace: Actor; vera: Actor; root: Actor };
 
 const ada: Actor = { userId: "user-ada", email: "ada@gmail.com", role: "editor" };
@@ -48,7 +52,46 @@ export async function mediaContext(): Promise<MediaContext> {
   await db.insert(user).values([member(ada, "Ada Lovelace"), member(grace, "Grace Hopper"), member(vera, "Vera Rubin"), member(root, "Root Admin")]);
   const fake = makeFakeDrive();
   const drive = createDriveClient({ config: fake.config, fetch: fake.fetch, now: fake.now });
-  return { db, fake, deps: { db, drive, origin: "https://app.test" }, ada, grace, vera, root };
+  return { db, fake, deps: { db, drive, origin: APP_ORIGIN }, ada, grace, vera, root };
+}
+
+// A fetch for the browser's API client: each request goes to the route handler Next would call for its method
+// and path, with `actor` signed in. A request that has no route throws.
+export function handlersFetch(ctx: MediaContext, actor: Actor): typeof fetch {
+  const member: CurrentUser = { id: actor.userId, email: actor.email, name: actor.email, image: null, role: actor.role };
+  const deps: MediaHandlerDeps = { db: () => ctx.db, auth: async () => member, drive: () => ctx.deps.drive, origin: () => APP_ORIGIN };
+  const media = makeMediaHandlers(deps);
+  const readToken = makeReadTokenHandler(deps);
+  const forAll = new Map<string, (req: Request) => Promise<Response>>([
+    ["GET /api/media", media.list],
+    ["POST /api/media", media.open],
+    ["POST /api/drive/read-token", readToken],
+  ]);
+  // By what follows the asset's id in the path.
+  const forOne = new Map<string, (req: Request, at: AssetRouteContext) => Promise<Response>>([
+    ["PATCH ", media.update],
+    ["DELETE ", media.remove],
+    ["POST /offset", media.offset],
+    ["POST /complete", media.complete],
+    ["POST /files", media.openFile],
+    ["POST /files/complete", media.completeFile],
+    ["POST /preview-failed", media.previewFailed],
+  ]);
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), APP_ORIGIN);
+    const method = (init?.method ?? "GET").toUpperCase();
+    const headers = new Headers(init?.headers);
+    headers.set("origin", APP_ORIGIN);
+    const req = new Request(url, { method, headers, body: init?.body });
+    if (url.origin === APP_ORIGIN) {
+      const all = forAll.get(`${method} ${url.pathname}`);
+      if (all) return all(req);
+      const [, id, rest = ""] = /^\/api\/media\/([^/]+)(\/.*)?$/.exec(url.pathname) ?? [];
+      const one = forOne.get(`${method} ${rest}`);
+      if (id !== undefined && one) return one(req, { params: Promise.resolve({ id: decodeURIComponent(id) }) });
+    }
+    throw new Error(`No route for ${method} ${url.origin === APP_ORIGIN ? url.pathname : url.href}`);
+  }) as typeof fetch;
 }
 
 // What a browser does: sends 8 MiB pieces from `from` until Drive answers 200.
