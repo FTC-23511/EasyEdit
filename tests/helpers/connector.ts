@@ -6,12 +6,21 @@ import { eq } from "drizzle-orm";
 import { vi } from "vitest";
 import { user } from "@/db/schema";
 import { addEntry, getRole, seedAdmin, SEED_ADMIN_EMAIL, type Role } from "@/lib/allowlist/service";
+import { clientDocuments } from "./client-documents";
 import { makeSuiteDb } from "./db";
 
 export const SECRET = "test-secret-".repeat(4);
 export const BASE_URL = "http://localhost:3000";
 export const MCP_URL = `${BASE_URL}/api/mcp`;
 export const CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+
+// A metadata document as Claude serves it, for a client whose id is the document's address.
+export function clientDocument(clientId: string, over: { name?: string; redirectUris?: string[] } = {}) {
+  return {
+    client_id: clientId, client_name: over.name ?? "Claude", redirect_uris: over.redirectUris ?? [CLAUDE_CALLBACK],
+    token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+  };
+}
 
 export type Connection = { userId: string; clientId: string; cookie: string; accessToken: string; refreshToken?: string };
 export type ConnectorApp = Awaited<ReturnType<typeof startConnectorApp>>;
@@ -35,7 +44,12 @@ export async function startConnectorApp() {
   delete globalForAuth.__easyEditAuth;
   const { db, close } = await makeSuiteDb();
   await seedAdmin(db);
+  // Served by the transport in ./client-documents, which every test file loads first.
+  const documents = clientDocuments();
+  documents.served.clear();
+  documents.asked.length = 0;
   let addresses = 0;
+  let clients = 0;
   // The rate limiter counts per address, so every simulated client gets its own.
   const freshIp = () => `198.51.${100 + Math.floor(addresses / 250)}.${(addresses++ % 250) + 1}`;
 
@@ -77,6 +91,19 @@ export async function startConnectorApp() {
     return { userId: account.id, cookie: `${ctx.authCookies.sessionToken.name}=${encodeURIComponent(signed)}` };
   }
 
+  // Serves a metadata document at an address and returns the address, which is the client's id.
+  function serveDocument(url: string, doc: unknown = clientDocument(url)): string {
+    documents.served.set(url, doc);
+    return url;
+  }
+
+  // A client of its own, known by a metadata document on claude.ai. Pass the result as clientId to share one.
+  function newClient(over: { name?: string; redirectUris?: string[] } = {}): string {
+    const url = `https://claude.ai/oauth/test-client-${++clients}.json`;
+    return serveDocument(url, clientDocument(url, over));
+  }
+
+  // Open registration is off. Kept to check that the endpoint refuses.
   function register(over: { redirectUris?: string[]; name?: string; ip?: string } = {}) {
     return send(new Request(`${BASE_URL}/api/auth/oauth2/register`, {
       method: "POST",
@@ -131,10 +158,10 @@ export async function startConnectorApp() {
     }));
   }
 
-  // Everything claude.ai and the member's browser do, from registering to holding tokens.
+  // Everything claude.ai and the member's browser do, from naming its client to holding tokens.
   async function connect(email: string, role: Role = "editor", opts: { resource?: string | null; clientId?: string } = {}): Promise<Connection> {
     const { userId, cookie } = await signIn(email, role);
-    const clientId = opts.clientId ?? ((await (await register()).json()) as { client_id: string }).client_id;
+    const clientId = opts.clientId ?? newClient();
     const { verifier, challenge } = pkce();
     const asked = await authorize({ clientId, cookie, challenge, resource: opts.resource });
     const back = asked.pathname === "/consent" ? await decide({ cookie, consentUrl: asked, accept: true }) : asked;
@@ -180,7 +207,7 @@ export async function startConnectorApp() {
   }
 
   return {
-    db, send, fetch: inProcessFetch, signIn, register, authorize, decide, token, connect, pkce, rpc, mcpClient, callTool,
+    db, send, fetch: inProcessFetch, documents, serveDocument, newClient, signIn, register, authorize, decide, token, connect, pkce, rpc, mcpClient, callTool,
     // As a new serverless instance would start: nothing kept in memory.
     forgetServerInstance: () => { delete globalForAuth.__easyEditAuth; },
     async stop() {

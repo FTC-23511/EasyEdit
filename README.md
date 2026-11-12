@@ -236,7 +236,7 @@ Claude cannot add video, images or audio yet.
 
 **Ending a connection:** the Admin page shows "Connected" next to each member who has allowed Claude. An admin ends a connection by clicking **Disconnect** next to the member, and removing a member ends it too. Removing the connector in claude.ai stops Claude from using it, but the member stays listed as "Connected" until an admin disconnects them. Signing out of the website does not end a connection.
 
-**Only claude.ai can connect.** Other clients are refused by their callback address. The allowed callback addresses and hosts are in `src/lib/connector/config.ts`.
+**Only claude.ai can connect.** Claude identifies itself with a client metadata document: its client ID is an https address on claude.ai, and the app reads that document only from claude.ai or claude.com. Apps cannot register themselves. Every connection must also send the member back to one of Claude's callback addresses. The allowed callback addresses and hosts are in `src/lib/connector/config.ts`.
 
 ## Who can do what
 

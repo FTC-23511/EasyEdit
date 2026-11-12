@@ -51,7 +51,7 @@ function createAuth() {
         allowDynamicClientRegistration: DYNAMIC_REGISTRATION,
         allowUnauthenticatedClientRegistration: DYNAMIC_REGISTRATION,
         grantTypes: ["authorization_code", "refresh_token"],
-        // A member is only ever sent back to Claude, whatever an app registered.
+        // A member is only ever sent back to Claude, whatever an app's document or stored row lists.
         validateRedirectUri: (uri, _registered, matches) => matches && isClaudeRedirect(uri),
         // Nobody manages apps through the API.
         clientPrivileges: () => false,
@@ -67,7 +67,7 @@ function createAuth() {
     rateLimit: { enabled: true, storage: "database" },
     // The jwt plugin's session-to-token endpoint is off. The only tokens handed out are the connector's.
     disabledPaths: ["/token"],
-    hooks: { before: connectorBeforeHook(db) },
+    hooks: { before: connectorBeforeHook() },
   });
 }
 

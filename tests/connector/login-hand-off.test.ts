@@ -86,7 +86,7 @@ describe("signing in with Google while connecting Claude", () => {
 
   it("the ordinary hand-off ends on the consent page for a member with no grant, and Allow then gives Claude a code once", async () => {
     await addEntry(app.db, { email: "linus@gmail.com", role: "editor", invitedBy: SEED_ADMIN_EMAIL });
-    const clientId = ((await (await app.register()).json()) as { client_id: string }).client_id;
+    const clientId = app.newClient();
     const asked = await authorizeRaw({ clientId, state: "s-linus", challenge: app.pkce().challenge });
     expect(asked.pathname).toBe("/login");
 

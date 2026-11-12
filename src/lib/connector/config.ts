@@ -9,10 +9,8 @@ export const CLAUDE_REDIRECT_URIS: readonly string[] = [
 // Hosts whose client metadata documents the sign-in server reads.
 export const CLIENT_DOCUMENT_HOSTS: readonly string[] = ["claude.ai", "claude.com"];
 
-// Clients may register themselves, without a token, at /api/auth/oauth2/register.
-export const DYNAMIC_REGISTRATION = true;
-
-export const MAX_REGISTERED_CLIENTS = 500;
+// Clients may not register themselves at /api/auth/oauth2/register. Claude identifies itself by its metadata document.
+export const DYNAMIC_REGISTRATION = false;
 
 export function appBaseUrl(): string {
   return requiredEnv("BETTER_AUTH_URL").replace(/\/+$/, "");

@@ -5,17 +5,6 @@ import { BASE_URL, CLAUDE_CALLBACK, MCP_URL, claimsOf, startConnectorApp, type C
 let testDb: DB;
 vi.mock("@/db", async (original) => ({ ...(await original<typeof import("@/db")>()), getDb: () => testDb }));
 
-// The metadata-document plugin fetches through this transport. Tests never touch the network.
-const documents = vi.hoisted(() => ({ served: new Map<string, unknown>(), asked: [] as string[] }));
-vi.mock("@better-auth/cimd/node", () => ({
-  fetchClientMetadataResource: async (input: RequestInfo | URL) => {
-    const url = new Request(input).url;
-    documents.asked.push(url);
-    const doc = documents.served.get(url);
-    if (doc === undefined) throw new TypeError(`no document at ${url}`);
-    return Response.json(doc, { headers: { "cache-control": "max-age=60" } });
-  },
-}));
 
 let app: ConnectorApp;
 beforeAll(async () => {
@@ -23,8 +12,6 @@ beforeAll(async () => {
   testDb = app.db;
 });
 afterAll(() => app.stop());
-
-const CLAUDE_DOCUMENT = "https://claude.ai/oauth/mcp-client-metadata.json";
 
 describe("the sign-in server for the connector", () => {
   it("serves both discovery documents, at the path form and at the root form", async () => {
@@ -35,11 +22,13 @@ describe("the sign-in server for the connector", () => {
         issuer: `${BASE_URL}/api/auth`,
         authorization_endpoint: `${BASE_URL}/api/auth/oauth2/authorize`,
         token_endpoint: `${BASE_URL}/api/auth/oauth2/token`,
-        registration_endpoint: `${BASE_URL}/api/auth/oauth2/register`,
         code_challenge_methods_supported: ["S256"],
         client_id_metadata_document_supported: true,
       });
     }
+    // Open registration is off, so no registration address is offered.
+    const meta = await (await app.send(new Request(`${BASE_URL}/.well-known/oauth-authorization-server/api/auth`))).json();
+    expect(meta.registration_endpoint).toBeUndefined();
     for (const url of [`${BASE_URL}/.well-known/oauth-protected-resource/api/mcp`, `${BASE_URL}/.well-known/oauth-protected-resource`]) {
       const res = await app.send(new Request(url));
       expect(res.status, url).toBe(200);
@@ -47,8 +36,10 @@ describe("the sign-in server for the connector", () => {
     }
   });
 
-  it("takes a member from registration to a token that is bound to the endpoint and names only who they are", async () => {
+  it("takes a member from Claude's metadata document to a token that is bound to the endpoint and names only who they are", async () => {
     const c = await app.connect("ada@gmail.com");
+    expect(c.clientId).toMatch(/^https:\/\/claude\.ai\//);
+    expect(app.documents.asked).toContain(c.clientId);
     const claims = claimsOf(c.accessToken);
     expect(claims).toMatchObject({ sub: c.userId, aud: MCP_URL, iss: `${BASE_URL}/api/auth`, azp: c.clientId });
     expect(claims.role).toBeUndefined();
@@ -58,7 +49,7 @@ describe("the sign-in server for the connector", () => {
 
   it("refuses a wrong PKCE verifier", async () => {
     const { cookie } = await app.signIn("grace@gmail.com");
-    const clientId = ((await (await app.register()).json()) as { client_id: string }).client_id;
+    const clientId = app.newClient();
     const asked = await app.authorize({ clientId, cookie });
     const back = asked.pathname === "/consent" ? await app.decide({ cookie, consentUrl: asked, accept: true }) : asked;
     const res = await app.token({
@@ -70,7 +61,7 @@ describe("the sign-in server for the connector", () => {
   });
 
   it("sends a signed-out visitor to /login with the request signed into the address", async () => {
-    const clientId = ((await (await app.register()).json()) as { client_id: string }).client_id;
+    const clientId = app.newClient();
     const to = await app.authorize({ clientId });
     expect(to.pathname).toBe("/login");
     expect(to.searchParams.get("sig")).toEqual(expect.any(String));
@@ -90,12 +81,11 @@ describe("the sign-in server for the connector", () => {
     expect(claimsOf(next.access_token)).toMatchObject({ sub: c.userId, aud: MCP_URL });
   });
 
-  it("accepts a client known by a metadata document on claude.ai", async () => {
-    documents.served.set(CLAUDE_DOCUMENT, {
-      client_id: CLAUDE_DOCUMENT, client_name: "Claude", redirect_uris: [CLAUDE_CALLBACK],
-      token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
-    });
-    const c = await app.connect("katherine@gmail.com", "editor", { clientId: CLAUDE_DOCUMENT });
-    expect(claimsOf(c.accessToken)).toMatchObject({ azp: CLAUDE_DOCUMENT, aud: MCP_URL });
+  it("accepts the client at the address claude.ai uses, shared by two members", async () => {
+    const claude = app.serveDocument("https://claude.ai/oauth/mcp-client-metadata.json");
+    const katherine = await app.connect("katherine@gmail.com", "editor", { clientId: claude });
+    const dorothy = await app.connect("dorothy@gmail.com", "editor", { clientId: claude });
+    expect(claimsOf(katherine.accessToken)).toMatchObject({ azp: claude, aud: MCP_URL, sub: katherine.userId });
+    expect(claimsOf(dorothy.accessToken)).toMatchObject({ azp: claude, aud: MCP_URL, sub: dorothy.userId });
   });
 });
