@@ -1,4 +1,4 @@
-import { FORMAT_PRESETS, type Op } from "@/lib/timeline";
+import { FORMAT_PRESETS, type Clip, type Op, type TimelineDoc } from "@/lib/timeline";
 import { timeAgo } from "@/lib/time-ago";
 import type { ProjectApi } from "./api";
 import type { EditorStore } from "./store";
@@ -33,8 +33,56 @@ function summarizeTrackUpdates(ops: OpOf<"update_track">[]): string {
   return count(tracks, "Changed a track", (n) => `Changed ${n} tracks`);
 }
 
-// A short line for the activity list saying what a batch of ops did.
-export function summarizeOps(ops: Op[]): string {
+export type ClipKind = Clip["type"];
+// Says what kind of clip an id is, when that is known.
+export type KindOf = (clipId: string) => ClipKind | undefined;
+
+const KIND_NOUN: Record<ClipKind, string> = { text: "text", video: "a video clip", image: "an image", audio: "an audio clip" };
+const nounFor = (kind: ClipKind | undefined) => (kind ? KIND_NOUN[kind] : "a clip");
+
+// What an update_clip patch touches, in the order it is listed.
+const ASPECTS: [name: string, touched: (patch: Record<string, unknown>) => boolean][] = [
+  ["wording", (p) => "text" in p],
+  ["font", (p) => has(p.style, "fontFamily")],
+  ["size", (p) => has(p.style, "fontSize")],
+  ["weight", (p) => has(p.style, "fontWeight")],
+  ["color", (p) => has(p.style, "color")],
+  ["alignment", (p) => has(p.style, "align")],
+  ["position", (p) => has(p.transform, "x") || has(p.transform, "y")],
+  ["scale", (p) => has(p.transform, "scale")],
+  ["rotation", (p) => has(p.transform, "rotation")],
+  ["opacity", (p) => has(p.transform, "opacity")],
+  ["fit", (p) => has(p.transform, "fit")],
+  ["source", (p) => "assetId" in p],
+  ["start point", (p) => "in" in p],
+  ["speed", (p) => "speed" in p],
+  ["volume", (p) => "volume" in p],
+];
+
+function has(part: unknown, key: string): boolean {
+  return typeof part === "object" && part !== null && key in part;
+}
+
+// "position", "position and scale", "position, scale and rotation", "position, scale, rotation and more".
+function listed(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  if (names.length <= 3) return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${names.slice(0, 3).join(", ")} and more`;
+}
+
+// "Changed text: wording and color", "Changed a video clip: scale", "Changed 2 clips: position".
+function summarizeClipUpdates(ops: OpOf<"update_clip">[], kindOf: KindOf): string {
+  const clips = new Set(ops.map((o) => o.clipId));
+  const aspects = ASPECTS.filter(([, touched]) => ops.some((o) => touched(o.patch))).map(([name]) => name);
+  if (aspects.length === 0) return count(clips.size, "Edited a clip", (k) => `Edited ${k} clips`);
+  if (clips.size > 1) return `Changed ${clips.size} clips: ${listed(aspects)}`;
+  // Only text has wording and a text style, so a patch that touches them names its own kind.
+  const isText = ops.some((o) => "text" in o.patch || "style" in o.patch);
+  return `Changed ${nounFor(kindOf(ops[0].clipId) ?? (isText ? "text" : undefined))}: ${listed(aspects)}`;
+}
+
+// A short line for the activity list saying what a batch of ops did. With kindOf, a change to one clip names its kind.
+export function summarizeOps(ops: Op[], kindOf: KindOf = () => undefined): string {
   const fallback = `Made ${ops.length} changes`;
   if (ops.length === 0) return fallback;
   const kinds = new Set(ops.map((o) => o.op));
@@ -45,13 +93,14 @@ export function summarizeOps(ops: Op[]): string {
   if (kinds.has("add_clip") && [...kinds].every((k) => k === "add_clip" || k === "add_track")) {
     const adds = ops.filter((o): o is OpOf<"add_clip"> => o.op === "add_clip");
     if (adds.length > 1) return `Added ${adds.length} clips`;
-    return adds[0].clip.type === "text" ? "Added text" : "Added a clip";
+    return `Added ${nounFor(adds[0].clip.type)}`;
   }
-  if (only("remove_clip")) return count(n, "Deleted a clip", (k) => `Deleted ${k} clips`);
-  if (only("move_clip")) return count(n, "Moved a clip", (k) => `Moved ${k} clips`);
-  if (only("trim_clip")) return count(n, "Trimmed a clip", (k) => `Trimmed ${k} clips`);
-  if (only("split_clip")) return count(n, "Split a clip", (k) => `Split ${k} clips`);
-  if (only("update_clip")) return count(n, "Edited a clip", (k) => `Edited ${k} clips`);
+  const one = (verb: string) => `${verb} ${nounFor(kindOf((ops[0] as { clipId: string }).clipId))}`;
+  if (only("remove_clip")) return count(n, one("Deleted"), (k) => `Deleted ${k} clips`);
+  if (only("move_clip")) return count(n, one("Moved"), (k) => `Moved ${k} clips`);
+  if (only("trim_clip")) return count(n, one("Trimmed"), (k) => `Trimmed ${k} clips`);
+  if (only("split_clip")) return count(n, one("Split"), (k) => `Split ${k} clips`);
+  if (only("update_clip")) return summarizeClipUpdates(ops as OpOf<"update_clip">[], kindOf);
   if (only("update_track")) return summarizeTrackUpdates(ops as OpOf<"update_track">[]);
   if (only("add_track")) return count(n, "Added a track", (k) => `Added ${k} tracks`);
   if (only("remove_track")) return count(n, "Removed a track", (k) => `Removed ${k} tracks`);
@@ -130,13 +179,28 @@ export function olderRange(oldestLoaded: number): { since: number; limit: number
 
 export type ActivityRow = { version: number; who: string; summary: string; when: string; canUndo: boolean };
 
-// The loaded entries as list rows, newest first.
-export function activityRows(entries: ActivityEntry[], meId: string, now: Date): ActivityRow[] {
+// The kind of every clip a change adds or brings back (its own ops, or the stored undo of a delete).
+function kindsIn(ops: Op[] | null, into: Map<string, ClipKind>): void {
+  for (const op of ops ?? []) {
+    if (op.op === "add_clip") into.set(op.clip.id, op.clip.type);
+    else if (op.op === "replace_track") for (const clip of op.track.clips) into.set(clip.id, clip.type);
+  }
+}
+
+// The loaded entries as list rows, newest first. With the project, a change to one clip names its kind.
+export function activityRows(entries: ActivityEntry[], meId: string, now: Date, doc?: TimelineDoc): ActivityRow[] {
+  const kinds = new Map<string, ClipKind>();
+  for (const entry of entries) {
+    kindsIn(entry.ops, kinds);
+    kindsIn(entry.inverse, kinds);
+  }
+  for (const track of doc?.tracks ?? []) for (const clip of track.clips) kinds.set(clip.id, clip.type);
+  const kindOf: KindOf = (clipId) => kinds.get(clipId);
   return entries
     .map((entry) => ({
       version: entry.version,
       who: whoLabel(entry, meId),
-      summary: summarizeOps(entry.ops),
+      summary: summarizeOps(entry.ops, kindOf),
       when: timeAgo(new Date(entry.createdAt), now),
       canUndo: canUndoChange(entry),
     }))

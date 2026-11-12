@@ -30,7 +30,7 @@ describe("undo_change", () => {
     await edit(1, retext("SECOND")); // version 2
     const r = await undo(2, 2);
     expect(r.isError).toBe(false);
-    expect(r.text.split("\n")[0]).toBe("Undid version 2 (Edited a clip) as version 3.");
+    expect(r.text.split("\n")[0]).toBe("Undid version 2 (Changed text: wording) as version 3.");
     expect(r.text).toContain('"FIRST"');
     expect(await text()).toBe("FIRST");
     expect((await project()).version).toBe(3);

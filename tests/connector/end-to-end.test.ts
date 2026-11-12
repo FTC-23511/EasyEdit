@@ -105,7 +105,7 @@ describe("Claude and the website on one project", () => {
       const refused = await call("edit_timeline", { project_id: id, expected_version: 1, ops: [{ op: "update_clip", clipId, patch: { text: "BY CLAUDE" } }] });
       expect(refused.isError).toBe(true);
       expect(refused.text).toContain("It is now at version 2.");
-      expect(refused.text).toContain("  version 2 · Grace · Edited a clip");
+      expect(refused.text).toContain("  version 2 · Grace · Changed text: wording");
       expect(refused.text).toContain('"BY A PERSON"');
       expect((await getProject(app.db, person, id))!.version).toBe(2);
 

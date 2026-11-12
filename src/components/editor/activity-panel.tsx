@@ -15,6 +15,7 @@ export function ActivityPanel() {
   const api = useEditorApi();
   const activity = useEditor((s) => s.activity);
   const me = useEditor((s) => s.me);
+  const doc = useEditor((s) => s.server.doc);
   const canEdit = useEditor((s) => s.canEdit);
   const serverVersion = useEditor((s) => s.server.version);
   const undoChange = useEditor((s) => s.undoChange);
@@ -66,7 +67,7 @@ export function ActivityPanel() {
     });
   }
 
-  const rows = useMemo(() => activityRows(activity, me.id, now), [activity, me.id, now]);
+  const rows = useMemo(() => activityRows(activity, me.id, now, doc), [activity, me.id, now, doc]);
   const byVersion = useMemo(() => new Map(activity.map((entry) => [entry.version, entry])), [activity]);
 
   if (rows.length === 0) {
