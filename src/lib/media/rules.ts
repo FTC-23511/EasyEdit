@@ -12,6 +12,7 @@ export type FileRefusal = "empty" | "too-large" | "heic" | "unsupported" | "unre
 
 const HEIC_EXTENSIONS = ["heic", "heif"];
 const MAX_SIDE_PX = 16_384;
+const MAX_LENGTH_MS = 2_147_483_647; // the most an integer column holds, about 24 days
 const DRIVE_NAME_CHARS = 120;
 
 // The text after the last dot, in lower case. "" when there is no dot or nothing before it.
@@ -31,16 +32,18 @@ export function kindFromName(fileName: string): AssetKind | null {
 export function checkFile(file: { name: string; sizeBytes: number }): { ok: true; kind: AssetKind } | { ok: false; reason: FileRefusal } {
   if (file.sizeBytes <= 0) return { ok: false, reason: "empty" };
   if (file.sizeBytes > LIMITS.mediaFileBytes) return { ok: false, reason: "too-large" };
+  if (!Number.isInteger(file.sizeBytes)) return { ok: false, reason: "unreadable" }; // a part of a byte, or not a number
   if (HEIC_EXTENSIONS.includes(extensionOf(file.name))) return { ok: false, reason: "heic" };
   const kind = kindFromName(file.name);
   return kind ? { ok: true, kind } : { ok: false, reason: "unsupported" };
 }
 
-const isLength = (ms: number | null) => ms !== null && ms >= 1;
-const isSide = (px: number | null) => px !== null && px >= 1 && px <= MAX_SIDE_PX;
+const isLength = (ms: number | null) => ms !== null && Number.isInteger(ms) && ms >= 1 && ms <= MAX_LENGTH_MS;
+const isSide = (px: number | null) => px !== null && Number.isInteger(px) && px >= 1 && px <= MAX_SIDE_PX;
 
 // True when what was read from the file fits its extension and makes sense: the same kind; a video or audio
-// length of at least 1 ms; a video or image at least 1 px and at most 16,384 px on each side.
+// length of at least 1 ms; a video or image at least 1 px and at most 16,384 px on each side. Lengths and
+// sides are whole numbers that the database can hold, so a fraction, NaN or Infinity never fits.
 export function probeFits(kind: AssetKind, probe: AssetProbe): boolean {
   if (probe.kind !== kind) return false;
   if (kind !== "image" && !isLength(probe.durationMs)) return false;

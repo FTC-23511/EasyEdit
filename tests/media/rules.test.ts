@@ -84,6 +84,32 @@ describe("which files the library takes", () => {
     expect(probeFits("video", { ...video, width: 0 })).toBe(false);
     expect(probeFits("video", { ...video, height: null })).toBe(false);
   });
+
+  it("believes only whole numbers that the database can hold", () => {
+    const audio: AssetProbe = { kind: "audio", durationMs: 95_000, width: null, height: null, fps: null, hasAudio: true, videoCodec: null };
+    const image: AssetProbe = { kind: "image", durationMs: null, width: 4032, height: 3024, fps: null, hasAudio: false, videoCodec: null };
+    expect(probeFits("video", { ...video, durationMs: 1.5 })).toBe(false);
+    expect(probeFits("audio", { ...audio, durationMs: 95_000.25 })).toBe(false);
+    expect(probeFits("video", { ...video, durationMs: Number.NaN })).toBe(false);
+    expect(probeFits("video", { ...video, durationMs: JSON.parse("1e400") })).toBe(false); // Infinity, as a request can carry it
+    expect(probeFits("audio", { ...audio, durationMs: 2_147_483_647 })).toBe(true); // the most an integer column holds, about 24 days
+    expect(probeFits("audio", { ...audio, durationMs: 2_147_483_648 })).toBe(false);
+    expect(probeFits("video", { ...video, durationMs: 3e9 })).toBe(false);
+    expect(probeFits("video", { ...video, width: 1080.5 })).toBe(false);
+    expect(probeFits("video", { ...video, height: 1919.5 })).toBe(false);
+    expect(probeFits("image", { ...image, width: 4032.5 })).toBe(false);
+    expect(probeFits("image", { ...image, height: Number.NaN })).toBe(false);
+  });
+
+  it("calls a size that is not a whole number unreadable, after empty and too large and before the name is looked at", () => {
+    expect(checkFile({ name: "a.mp4", sizeBytes: 1.5 })).toEqual({ ok: false, reason: "unreadable" });
+    expect(checkFile({ name: "a.mp4", sizeBytes: Number.NaN })).toEqual({ ok: false, reason: "unreadable" });
+    expect(checkFile({ name: "a.gif", sizeBytes: 1.5 })).toEqual({ ok: false, reason: "unreadable" });
+    expect(checkFile({ name: "a.heic", sizeBytes: 1.5 })).toEqual({ ok: false, reason: "unreadable" });
+    expect(checkFile({ name: "a.mp4", sizeBytes: -0.5 })).toEqual({ ok: false, reason: "empty" });
+    expect(checkFile({ name: "a.mp4", sizeBytes: 2 * GB + 0.5 })).toEqual({ ok: false, reason: "too-large" });
+    expect(checkFile({ name: "a.mp4", sizeBytes: JSON.parse("1e400") })).toEqual({ ok: false, reason: "too-large" });
+  });
 });
 
 describe("names", () => {
