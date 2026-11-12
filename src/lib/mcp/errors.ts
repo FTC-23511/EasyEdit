@@ -6,6 +6,7 @@ import { getOpsSince, getProject } from "@/lib/projects/service";
 import { getUserNames } from "@/lib/projects/user-names";
 import { ServiceError } from "@/lib/service-error";
 import type { OpErrorCode } from "@/lib/timeline";
+import { oneLine } from "./one-line";
 import { projectPage } from "./project-text";
 import { fail, type ToolContext, type ToolResult } from "./types";
 
@@ -48,9 +49,6 @@ export function opNotAvailable(hit: { opIndex: number; opName: string; reason: s
   return fail([`Edit refused: ops[${hit.opIndex}] (${hit.opName}) is not available here.`, hit.reason, NOTHING_APPLIED].join("\n"));
 }
 
-// The engine's message echoes ids Claude sent, which may hold line breaks. The refusal keeps it to one line.
-const oneLine = (text: string) => text.replace(/\r\n|[\r\n\u2028\u2029]/g, " ");
-
 function opName(ops: unknown[], opIndex: number): string {
   const op = ops[opIndex];
   const name = typeof op === "object" && op !== null ? (op as { op?: unknown }).op : undefined;
@@ -90,7 +88,7 @@ async function unseenChanges(ctx: ToolContext, projectId: string, since: number,
   const names = await getUserNames(ctx.db, entries.map((entry) => actorUserId(entry.actor)));
   const lines = ["Changes you have not seen:"];
   for (const entry of entries) {
-    const who = entry.actor === ctx.actor.userId ? "you" : displayActor(entry.actor, names);
+    const who = entry.actor === ctx.actor.userId ? "you" : oneLine(displayActor(entry.actor, names));
     lines.push(`  version ${entry.version} · ${who} · ${summarizeOps(entry.ops)}`);
   }
   const more = current - since - entries.length;
@@ -113,6 +111,7 @@ export async function failureResult(
     return fail(
       [
         `Edit refused: ops[${error.opIndex}] (${opName(input.ops, error.opIndex)}) failed with ${code}.`,
+        // The engine's message echoes ids Claude sent, which may hold line breaks.
         oneLine(error.message),
         `How to fix: ${OP_HINTS[code]}`,
         NOTHING_APPLIED,

@@ -4,12 +4,13 @@ import { listProjects } from "@/lib/projects/service";
 import { getUserNames } from "@/lib/projects/user-names";
 import { timeAgo } from "@/lib/time-ago";
 import { escapeQuoted, FORMAT_PRESETS } from "@/lib/timeline";
+import { oneLine } from "../one-line";
 import { ok, type ToolContext, type ToolResult } from "../types";
 
 export async function listProjectsTool(ctx: ToolContext, input: { cursor?: number }): Promise<ToolResult> {
   const { user } = ctx;
   const can = meetsRole(user.role, "editor") ? "You can read and change projects." : "You can read projects but not change them.";
-  const lines = [`Signed in as ${user.name} (${user.role}). ${can}`];
+  const lines = [`Signed in as ${oneLine(user.name)} (${user.role}). ${can}`];
 
   const projects = await listProjects(ctx.db, ctx.actor);
   if (projects.length === 0) {
@@ -24,7 +25,7 @@ export async function listProjectsTool(ctx: ToolContext, input: { cursor?: numbe
   lines.push(projects.length === 1 ? "1 project:" : `${projects.length} projects, most recently changed first:`);
   for (const p of page) {
     lines.push(
-      `${p.id}  "${escapeQuoted(p.name)}"  ${FORMAT_PRESETS[p.format].label}  version ${p.version}  changed ${timeAgo(p.updatedAt, now)} by ${displayActor(p.updatedBy, names)}`,
+      `${p.id}  "${escapeQuoted(p.name)}"  ${FORMAT_PRESETS[p.format].label}  version ${p.version}  changed ${timeAgo(p.updatedAt, now)} by ${oneLine(displayActor(p.updatedBy, names))}`,
     );
   }
   const end = start + page.length;
