@@ -56,21 +56,33 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
 
   async function findOrMakeFolder(name: DriveFolder): Promise<string> {
     const q = `name = '${name}' and mimeType = '${FOLDER_MIME}' and '${rootFolderId}' in parents and trashed = false`;
-    // Oldest first: if two were ever made, everyone who looks finds the same one.
-    const listed = await send("folder", `/drive/v3/files?q=${encodeURIComponent(q)}&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=createdTime&fields=files(id)`);
-    if (!listed.ok) throw await refused("folder", listed);
-    const { files } = await objectIn(listed);
-    if (!Array.isArray(files)) throw new DriveError("folder", listed.status, "unknown"); // not a list: do not take it for an empty one
-    const first: unknown = files[0];
-    if (first !== undefined) {
+    // The oldest folder of that name, or null. Oldest first: if two were ever made, everyone who looks finds the same one.
+    const oldest = async (): Promise<string | null> => {
+      const listed = await send("folder", `/drive/v3/files?q=${encodeURIComponent(q)}&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=createdTime&fields=files(id)`);
+      if (!listed.ok) throw await refused("folder", listed);
+      const { files } = await objectIn(listed);
+      if (!Array.isArray(files)) throw new DriveError("folder", listed.status, "unknown"); // not a list: do not take it for an empty one
+      const first: unknown = files[0];
+      if (first === undefined) return null;
       if (!isRecord(first) || !isId(first.id)) throw new DriveError("folder", listed.status, "unknown");
       return first.id;
-    }
+    };
+
+    const found = await oldest();
+    if (found !== null) return found;
     const made = await send("folder", "/drive/v3/files?supportsAllDrives=true&fields=id", { method: "POST", json: { name, mimeType: FOLDER_MIME, parents: [rootFolderId] } });
     if (!made.ok) throw await refused("folder", made);
     const { id } = await objectIn(made);
     if (!isId(id)) throw new DriveError("folder", made.status, "unknown");
-    return id;
+    // Another server instance may have found no folder at the same moment and made one too. Looking once more
+    // settles both on the older one; the other stays in Drive, empty. The folder is made by now, so a second look
+    // that shows nothing or fails is no reason to fail.
+    try {
+      return (await oldest()) ?? id;
+    } catch (error) {
+      if (!(error instanceof DriveError)) throw error;
+      return id;
+    }
   }
 
   return {

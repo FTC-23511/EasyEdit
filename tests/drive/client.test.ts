@@ -134,8 +134,8 @@ describe("the Drive client", () => {
     await drive.getFile(id);
     await drive.trashFile(id);
 
-    const [ids, list, make, open, offset, get, trash] = sent;
-    expect(sent).toHaveLength(7);
+    const [ids, list, make, again, open, offset, get, trash] = sent;
+    expect(sent).toHaveLength(8);
     expect(ids).toEqual({ method: "GET", url: `${B}/drive/v3/files/generateIds?count=1&space=drive&type=files`, headers: write, body: undefined });
     expect(list).toMatchObject({ method: "GET", headers: write, body: undefined });
     expect(list.url.split("?")[0]).toBe(`${B}/drive/v3/files`);
@@ -147,6 +147,7 @@ describe("the Drive client", () => {
       fields: "files(id)",
     });
     expect(make).toEqual({ method: "POST", url: `${B}/drive/v3/files?supportsAllDrives=true&fields=id`, headers: json, body: { name: "Originals", mimeType: FOLDER_MIME, parents: ["folder1"] } });
+    expect(again).toEqual(list); // after making the folder, the same list request once more
     expect(open).toEqual({
       method: "POST",
       url: `${B}/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true`,
@@ -158,7 +159,7 @@ describe("the Drive client", () => {
     expect(trash).toEqual({ method: "PATCH", url: `${B}/drive/v3/files/${id}?supportsAllDrives=true`, headers: json, body: { trashed: true } });
 
     // Every call but the offset question carried the token that can write, and all of them shared one.
-    expect(fake.calls.filter((c) => c.path !== "/token").map((c) => c.scope)).toEqual([SCOPE_WRITE, SCOPE_WRITE, SCOPE_WRITE, SCOPE_WRITE, null, SCOPE_WRITE, SCOPE_WRITE]);
+    expect(fake.calls.filter((c) => c.path !== "/token").map((c) => c.scope)).toEqual([SCOPE_WRITE, SCOPE_WRITE, SCOPE_WRITE, SCOPE_WRITE, SCOPE_WRITE, null, SCOPE_WRITE, SCOPE_WRITE]);
     expect(fake.calls.filter((c) => c.path === "/token")).toHaveLength(1);
     expect(sent.some((request) => /corpora|driveId=/.test(request.url))).toBe(false);
   });
@@ -171,7 +172,45 @@ describe("the Drive client", () => {
     const { fake, drive } = client();
     const [a, b] = await Promise.all([drive.folderId("Originals"), drive.folderId("Originals")]);
     expect(a).toBe(b);
-    expect(fake.calls.filter((c) => c.path === "/drive/v3/files")).toHaveLength(2); // one look, one folder made
+    expect(fake.calls.filter((c) => c.path === "/drive/v3/files")).toHaveLength(3); // one look, one folder made, one look again
+  });
+
+  it("settles two server instances that ask at once on one folder", async () => {
+    const fake = makeFakeDrive();
+    const instance = () => createDriveClient({ config: fake.config, fetch: fake.fetch, now: fake.now });
+    const [a, b] = [instance(), instance()];
+    const [idA, idB] = await Promise.all([a.folderId("Originals"), b.folderId("Originals")]);
+    expect(idA).toBe(idB);
+    expect(await instance().folderId("Originals")).toBe(idA); // a third agrees with both
+    // Each found no folder and made one. The older one is the folder; the other is left in Drive, empty.
+    const made = [...fake.files].filter(([, file]) => file.name === "Originals").map(([id]) => id);
+    expect(made).toHaveLength(2);
+    expect(idA).toBe(made[0]);
+    // Both remember it: neither asks Drive again.
+    const asked = fake.calls.length;
+    expect([await a.folderId("Originals"), await b.folderId("Originals")]).toEqual([idA, idA]);
+    expect(fake.calls).toHaveLength(asked);
+  });
+
+  it("keeps the folder it made when it cannot look again", async () => {
+    // What the second look is answered with, for a client whose first look finds nothing.
+    const secondLook = async (answer: () => Response) => {
+      let looks = 0;
+      const { fake, drive } = watched((line) => (line.startsWith("GET /drive/v3/files?") && ++looks === 2 ? answer() : undefined));
+      const id = await drive.folderId("Originals");
+      expect(looks).toBe(2);
+      expect(fake.files.get(id)).toEqual(aFolder("Originals")); // the one it made
+      expect(await drive.folderId("Originals")).toBe(id); // and it is remembered
+      expect(looks).toBe(2);
+    };
+    await secondLook(() => Response.json({ error: { code: 500, errors: [{ reason: "backendError" }] } }, { status: 500 }));
+    await secondLook(() => Response.json({ files: "none" })); // an answer that cannot be read
+    await secondLook(() => Response.json({ files: [{ id: 7 }] }));
+    await secondLook(() => Response.json({ files: [] })); // Drive's list does not show the new folder yet
+    await secondLook(() => { throw new TypeError("fetch failed"); }); // no answer at all
+    // Only a failed Drive call is passed over. Anything else that goes wrong is not hidden.
+    const broken = { get ok(): boolean { throw new RangeError("not a Drive failure"); } } as Response;
+    await expect(secondLook(() => broken)).rejects.toThrow(RangeError);
   });
 
   it("takes the oldest folder when there are two of a name", async () => {

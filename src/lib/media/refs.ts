@@ -97,10 +97,9 @@ export function findMediaProblem(after: TimelineDoc, ops: Op[], facts: Map<strin
     const durationMs = facts.get(clip.assetId)?.durationMs ?? null;
     if (durationMs === null) continue;
     const frames = sourceFrames(durationMs, after.fps);
-    // The engine rounds `in` in a start trim and a split, so at a speed that is not whole a clip that ended on
-    // the last frame of its media can come out one frame over.
-    const allowed = Number.isInteger(clip.speed) ? frames : frames + 1;
-    if (clip.in + Math.round(clip.duration * clip.speed) > allowed) {
+    // No frame over is allowed at any speed. The engine rounds `in` down in a start trim and a split, so a piece
+    // of a clip never uses more of the media than the clip it came from.
+    if (clip.in + Math.round(clip.duration * clip.speed) > frames) {
       return { code: "past_end", assetId: clip.assetId, opIndex, clipId, frames };
     }
   }

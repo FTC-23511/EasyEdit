@@ -341,7 +341,7 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
           if (op.in !== undefined) {
             sourceIn = op.in;
           } else if (target.type === "video" || target.type === "audio") {
-            sourceIn = target.in + Math.round(delta * target.speed);
+            sourceIn = target.in + Math.floor(delta * target.speed);
             if (sourceIn < 0) throw outOfRange("cannot start before the start of its source");
           }
         } else {
@@ -406,7 +406,7 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
         right.start = op.at;
         right.duration = end - op.at;
         if (right.type !== "text" && left.type !== "text") {
-          right.in = left.in + Math.round((op.at - left.start) * left.speed);
+          right.in = left.in + Math.floor((op.at - left.start) * left.speed);
         }
         left.duration = op.at - left.start;
         track.clips.push(right);

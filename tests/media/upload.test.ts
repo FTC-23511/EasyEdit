@@ -196,6 +196,49 @@ describe("opening an upload", () => {
     expect((await openUpload(ctx.deps, ctx.ada, { ...clip("d.mov"), lastModifiedMs: -1 })).asset.fileName).toBe("d.mov"); // a date before 1970
   });
 
+  it("refuses a file type that cannot be sent to Drive in a header, as a file that could not be read", async () => {
+    const ctx = await mediaContext();
+    const refused = { code: "INVALID", status: 400, message: "This file couldn't be read. It may be damaged." };
+    const bad = [
+      "video/mp4\r\nX-Upload-Content-Length: 1", // a line break
+      "video/mp4\n",
+      "video/\u4e2d\u6587", // outside Latin-1
+      "vid\u00e9o/mp4", // in Latin-1, not ASCII
+      "video/mp4\t",
+      "video/\u001fmp4", // the last control character
+      "video/mp4\u007f", // the first character after the printable ones
+      `video/${"x".repeat(250)}`, // 256 characters
+    ];
+    expect(bad[7]).toHaveLength(256);
+    for (const mimeType of bad) await expect(openUpload(ctx.deps, ctx.ada, { ...VIDEO, mimeType }), JSON.stringify(mimeType)).rejects.toMatchObject(refused);
+    expect(ctx.fake.calls).toEqual([]); // no request reached Drive
+    expect(await assetIds(ctx)).toEqual([]);
+    // 255 characters, and every printable character from the space to the tilde, are fine.
+    const longest = `video/${"x".repeat(249)}`;
+    const printable = "video/quicktime; codecs=\"hvc1, mp4a\" ~";
+    expect(longest).toHaveLength(255);
+    const long = await openUpload(ctx.deps, ctx.ada, { ...clip("a.mov"), mimeType: longest });
+    const odd = await openUpload(ctx.deps, ctx.ada, { ...clip("b.mov"), mimeType: printable });
+    expect(ctx.fake.sessions.get(long.uploadUrl)!.mimeType).toBe(longest);
+    expect(ctx.fake.sessions.get(odd.uploadUrl)!.mimeType).toBe(printable);
+    expect(await rows(ctx, sql`select mime_type from assets order by file_name`)).toEqual([{ mime_type: longest }, { mime_type: printable }]);
+  });
+
+  it("opens the session of a file with no type as application/octet-stream, and stores the type as it was given", async () => {
+    const ctx = await mediaContext();
+    const { asset, uploadUrl } = await openUpload(ctx.deps, ctx.ada, { ...VIDEO, mimeType: "" }); // what a browser says of a file it does not know
+    expect(ctx.fake.sessions.get(uploadUrl)).toMatchObject({ mimeType: "application/octet-stream", sizeBytes: 20_000_000 });
+    expect(await rows(ctx, sql`select id, mime_type from assets`)).toEqual([{ id: asset.id, mime_type: "" }]);
+    // The file Drive ends up with has that type, and the upload completes as any other.
+    await sendAll(ctx.fake, uploadUrl, 20_000_000);
+    const ready = await completeUpload(ctx.deps, ctx.ada, asset.id);
+    expect(ctx.fake.files.get(ready.originalFileId!)).toMatchObject({ mimeType: "application/octet-stream", sizeBytes: 20_000_000 });
+    expect(await rows(ctx, sql`select mime_type from assets`)).toEqual([{ mime_type: "" }]);
+    // A type that is given is sent as it is.
+    const typed = await openUpload(ctx.deps, ctx.ada, clip("typed.mov"));
+    expect(ctx.fake.sessions.get(typed.uploadUrl)!.mimeType).toBe("video/quicktime");
+  });
+
   it("says why each refused file was refused, with a 400", async () => {
     const ctx = await mediaContext();
     const refusedWith = (message: string) => ({ code: "INVALID", status: 400, message });

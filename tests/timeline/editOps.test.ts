@@ -155,6 +155,77 @@ describe("split_clip", () => {
   });
 });
 
+// A start trim and a split work out where in its source a clip now begins. At a speed that is not whole that is
+// seldom a whole frame, and it is rounded down, so that no piece ever reaches further into the source than the
+// clip it was cut from.
+describe("a source position is rounded down", () => {
+  const SPEEDS = [0.25, 0.5, 0.75, 1.25, 1.5, 2.5];
+  // The first source frame a clip does not use.
+  const sourceEnd = (clip: unknown) => {
+    const { in: sourceIn, duration, speed } = clip as { in: number; duration: number; speed: number };
+    return sourceIn + Math.round(duration * speed);
+  };
+
+  it("a start trim rounds the new `in` down, inward and outward", () => {
+    const d = withClips(media("c1", 30, 60, { in: 10, speed: 1.5 }));
+    const inward = applyOps(d, [{ op: "trim_clip", clipId: "c1", edge: "start", to: 35 }]); // 7.5 source frames later
+    expect(clipsOf(inward.doc)[0]).toMatchObject({ start: 35, duration: 55, in: 17 });
+    expect(applyOps(inward.doc, inward.inverse).doc).toEqual(d);
+    const outward = applyOps(d, [{ op: "trim_clip", clipId: "c1", edge: "start", to: 27 }]); // 4.5 source frames earlier
+    expect(clipsOf(outward.doc)[0]).toMatchObject({ start: 27, duration: 63, in: 5 });
+    expect(applyOps(outward.doc, outward.inverse).doc).toEqual(d);
+    // An `in` that the op gives is taken as it is.
+    const given = applyOps(d, [{ op: "trim_clip", clipId: "c1", edge: "start", to: 35, in: 18 }]);
+    expect(clipsOf(given.doc)[0]).toMatchObject({ start: 35, duration: 55, in: 18 });
+  });
+
+  it("a split rounds the right part's `in` down", () => {
+    const d = withClips(media("c1", 10, 90, { in: 5, speed: 1.5 }));
+    const { doc, inverse } = applyOps(d, [{ op: "split_clip", clipId: "c1", at: 21, newClipId: "c2" }]); // 16.5 source frames in
+    expect(clipsOf(doc)[0]).toMatchObject({ id: "c1", start: 10, duration: 11, in: 5 });
+    expect(clipsOf(doc)[1]).toMatchObject({ id: "c2", start: 21, duration: 79, in: 21 });
+    expect(applyOps(doc, inverse).doc).toEqual(d);
+  });
+
+  it("neither piece of a split uses more of the source than the clip did", () => {
+    const over: string[] = [];
+    for (const speed of SPEEDS) {
+      for (let duration = 2; duration <= 120; duration++) {
+        const d = withClips(media("c1", 10, duration, { in: 7, speed }));
+        const limit = sourceEnd(clipsOf(d)[0]);
+        for (let at = 11; at < 10 + duration; at++) {
+          const pieces = clipsOf(applyOps(d, [{ op: "split_clip", clipId: "c1", at, newClipId: "c2" }]).doc);
+          expect(pieces).toHaveLength(2);
+          for (const piece of pieces) {
+            if (sourceEnd(piece) > limit) over.push(`speed ${speed}, ${duration} frames, cut at ${at}: ${piece.id} ends at ${sourceEnd(piece)} of ${limit}`);
+          }
+        }
+      }
+    }
+    expect({ over: over.length, first: over.slice(0, 3) }).toEqual({ over: 0, first: [] });
+  });
+
+  it("a start trim, inward or outward by 1 to 5 frames, never uses more of the source than the clip did", () => {
+    const over: string[] = [];
+    let trims = 0;
+    for (const speed of SPEEDS) {
+      for (let duration = 2; duration <= 120; duration++) {
+        const d = withClips(media("c1", 10, duration, { in: 20, speed })); // room before it on the timeline and in the source
+        const limit = sourceEnd(clipsOf(d)[0]);
+        for (const by of [1, 2, 3, 4, 5, -1, -2, -3, -4, -5]) {
+          if (by >= duration) continue; // nothing would be left of the clip
+          const [trimmed] = clipsOf(applyOps(d, [{ op: "trim_clip", clipId: "c1", edge: "start", to: 10 + by }]).doc);
+          expect(trimmed.duration).toBe(duration - by);
+          trims++;
+          if (sourceEnd(trimmed) > limit) over.push(`speed ${speed}, ${duration} frames, start moved by ${by}: ends at ${sourceEnd(trimmed)} of ${limit}`);
+        }
+      }
+    }
+    expect({ over: over.length, first: over.slice(0, 3) }).toEqual({ over: 0, first: [] });
+    expect(trims).toBe(6 * (119 * 10 - 10)); // every case ran but the ten, at each speed, that would leave nothing of a short clip
+  });
+});
+
 describe("update_clip", () => {
   it("merges transform one level deep", () => {
     const d = withClips(media("c1", 0, 30));

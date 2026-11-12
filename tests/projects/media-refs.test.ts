@@ -73,18 +73,18 @@ describe("a project's media must exist", () => {
     expect((await send([add(clip("image", image.id, { duration: 9000 }))], 0)).version).toBe(1);
   });
 
-  it("2. allows one frame of rounding at a speed that is not whole", async () => {
+  it("2. refuses one frame over at a speed that is not whole", async () => {
     const { video, send } = await setup();
     await send([add(clip("video", video.id, { speed: 1.5, duration: 250 }))], 0); // 375 source frames
-    expect((await send([{ op: "trim_clip", clipId: "c1", edge: "start", to: 1 }], 1)).version).toBe(2); // in 2, and 249 × 1.5 rounds to 374: 376
+    expect((await send([{ op: "trim_clip", clipId: "c1", edge: "start", to: 1 }], 1)).version).toBe(2); // in 1 (1.5 rounded down), and 249 × 1.5 rounds to 374: 375
     expect((await send([{ op: "update_clip", clipId: "c1", patch: { volume: 0 } }], 2)).version).toBe(3); // a patch without assetId, in or speed is not checked
-    await expect(send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 251 }], 3)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE" }); // 2 + 375 = 377
+    await expect(send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 251 }], 3)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE" }); // 1 + 375 = 376
   });
 
   it("3. does not check a split, a move or a delete", async () => {
     const { video, send } = await setup();
     await send([add(clip("video", video.id, { speed: 1.5, duration: 250 }))], 0); // 375 source frames
-    expect((await send([{ op: "split_clip", clipId: "c1", at: 3 }], 1)).version).toBe(2); // the halves round to 376
+    expect((await send([{ op: "split_clip", clipId: "c1", at: 3 }], 1)).version).toBe(2); // neither half uses more than the clip did
     expect((await send([{ op: "move_clip", clipId: "c1", start: 600 }], 2)).version).toBe(3);
   });
 
@@ -148,11 +148,18 @@ describe("a project's media must exist: more of each rule", () => {
     expect((await send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 120 }, { op: "update_clip", clipId: "c1", patch: { assetId: short } }], 1)).version).toBe(2);
   });
 
-  it("2. rounds the frames a clip uses to the nearest whole one", async () => {
+  it("2. rounds the frames a clip uses to the nearest whole one, and allows none over at any speed", async () => {
     const { video, send } = await setup();
-    await expect(send([add(clip("video", video.id, { speed: 1.5, duration: 251 }))], 0)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE" }); // 376.5 rounds to 377
-    expect((await send([add(clip("video", video.id, { speed: 0.9, duration: 418 }))], 0)).version).toBe(1); // 376.2 rounds to 376, the one frame over that is allowed
-    await expect(send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 419 }], 1)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE" }); // 377.1
+    const past = { code: "TRIM_OUT_OF_RANGE", status: 400, opIndex: 0, message: 'add_clip (op 0): clip "c1" would run past the end of its media, which is 375 frames long' };
+    await expect(send([add(clip("video", video.id, { speed: 1.5, duration: 251 }))], 0)).rejects.toMatchObject(past); // 376.5 rounds to 377
+    await expect(send([add(clip("video", video.id, { speed: 0.9, duration: 418 }))], 0)).rejects.toMatchObject(past); // 376.2 rounds to 376: one frame over
+    await expect(send([add(clip("video", video.id, { speed: 0.7, duration: 537 }))], 0)).rejects.toMatchObject(past); // 375.9 rounds up to 376
+    await expect(send([add(clip("video", video.id, { speed: 1.5, duration: 250, in: 1 }))], 0)).rejects.toMatchObject(past); // 1 + 375
+    await expect(send([add(clip("video", video.id, { speed: 0.5, duration: 751 }))], 0)).rejects.toMatchObject(past); // 375.5 rounds up to 376
+    expect((await send([add(clip("video", video.id, { speed: 0.9, duration: 417 }))], 0)).version).toBe(1); // 375.3 rounds down to 375
+    await expect(send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 418 }], 1)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE", opIndex: 0 }); // 376.2
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { in: 1 } }], 1)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE", opIndex: 0 }); // 1 + 375
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { speed: 0.901 } }], 1)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE", opIndex: 0 }); // 375.7
   });
 
   it("2. checks an audio clip", async () => {
@@ -186,6 +193,52 @@ describe("a project's media must exist: more of each rule", () => {
     await send(removed.inverse, 2);
     expect((await send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 60 }], 3)).version).toBe(4);
     await expect(send([{ op: "trim_clip", clipId: "c1", edge: "end", to: 376 }], 4)).rejects.toMatchObject({ code: "TRIM_OUT_OF_RANGE", opIndex: 0 });
+  });
+
+  // The engine rounds a clip's new `in` down in a split and a start trim, so cutting and trimming a clip that ends
+  // on the last frame of its media never puts a piece past that frame, however often it is done.
+  const fullAt = async (speed: number, duration: number) => {
+    const made = await setup();
+    await made.send([add(clip("video", made.video.id, { duration: 375 }))], 0);
+    await made.send([{ op: "trim_clip", clipId: "c1", edge: "end", to: duration }, { op: "update_clip", clipId: "c1", patch: { speed } }], 1); // the whole 375 frames, re-timed
+    const clips = async () => (await getProject(made.ctx.db, made.ctx.ada, made.id))!.doc.tracks.flatMap((t) => t.clips);
+    const uses = async () => (await clips()).map((c) => (c.type === "text" ? 0 : c.in + Math.round(c.duration * c.speed)));
+    return { ...made, clips, uses };
+  };
+
+  it("2. three cuts of a whole clip at speed 1.5 leave every piece inside its media, still trimmable and undoable", async () => {
+    const { send, clips, uses } = await fullAt(1.5, 250);
+    expect(await uses()).toEqual([375]);
+    expect((await send([{ op: "split_clip", clipId: "c1", at: 51, newClipId: "c2" }], 2)).version).toBe(3);
+    expect((await send([{ op: "split_clip", clipId: "c2", at: 102, newClipId: "c3" }], 3)).version).toBe(4);
+    expect((await send([{ op: "split_clip", clipId: "c3", at: 153, newClipId: "c4" }], 4)).version).toBe(5);
+    expect((await clips()).map((c) => c.id)).toEqual(["c1", "c2", "c3", "c4"]);
+    for (const used of await uses()) expect(used).toBeLessThanOrEqual(375);
+    expect((await clips())[3]).toMatchObject({ id: "c4", start: 153, duration: 97, in: 228 }); // it ends at 374, where it ended at 377 when `in` was rounded to the nearest frame
+    // The last piece: its start can be trimmed, and an end trim of it can be undone.
+    expect((await send([{ op: "trim_clip", clipId: "c4", edge: "start", to: 160 }], 5)).version).toBe(6);
+    const shorter = await send([{ op: "trim_clip", clipId: "c4", edge: "end", to: 240 }], 6); // in by 10 frames
+    expect(shorter.version).toBe(7);
+    expect(shorter.inverse).toEqual([{ op: "trim_clip", clipId: "c4", edge: "end", to: 250, expect: { start: 160, duration: 80 } }]);
+    expect((await send(shorter.inverse, 7)).version).toBe(8);
+    expect((await clips())[3]).toMatchObject({ id: "c4", start: 160, duration: 90, in: 238 });
+    for (const used of await uses()) expect(used).toBeLessThanOrEqual(375);
+  });
+
+  it.each([[1.5, 250], [0.5, 750]])("2. ten one-frame start trims in ten requests at speed %s are each taken, and each can be undone", async (speed, duration) => {
+    const { send, clips, uses } = await fullAt(speed, duration);
+    const whole = await clips();
+    expect(await uses()).toEqual([375]); // it ends on the last frame of its media
+    const undo: unknown[][] = [];
+    for (let to = 1; to <= 10; to++) {
+      const trimmed = await send([{ op: "trim_clip", clipId: "c1", edge: "start", to }], to + 1);
+      expect(trimmed.version).toBe(to + 2);
+      undo.push(trimmed.inverse);
+      expect((await clips())[0]).toMatchObject({ start: to, duration: duration - to });
+      expect((await uses())[0]).toBeLessThanOrEqual(375);
+    }
+    for (let i = 9; i >= 0; i--) expect((await send(undo[i], 21 - i)).version).toBe(22 - i); // newest first
+    expect(await clips()).toEqual(whole);
   });
 
   it("3. replace_track is not checked, and a clip it brought in is checked only when it is trimmed or re-timed", async () => {

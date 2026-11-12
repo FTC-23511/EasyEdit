@@ -83,10 +83,17 @@ function eventOf(event: string | undefined): string | null {
 // A frame rate that a `real` column holds: above 0 and not too large, also once it is rounded to that column.
 const isFrameRate = (fps: number) => Math.fround(fps) > 0 && Number.isFinite(Math.fround(fps));
 
-// What the file rules do not look at must still be something the database can hold.
+// A file's type goes to Drive in a request header, so it is short and holds only printable ASCII. It may be
+// empty: a browser gives no type for a file it does not know.
+const MIME_TYPE_CHARS = 255;
+const isSendableType = (mimeType: string) => mimeType.length <= MIME_TYPE_CHARS && /^[\x20-\x7e]*$/.test(mimeType);
+// What Drive is told of a file whose type is not known.
+const UNKNOWN_TYPE = "application/octet-stream";
+
+// What the file rules do not look at must still be something the database can hold and Drive can be sent.
 function canBeStored(kind: AssetKind, input: OpenUploadInput): boolean {
   if (!Number.isSafeInteger(input.lastModifiedMs)) return false;
-  if (!isStorableText(input.fileName) || !isStorableText(input.mimeType)) return false;
+  if (!isStorableText(input.fileName) || !isSendableType(input.mimeType)) return false;
   if (kind !== "video") return true; // a frame rate and a codec are kept only for a video
   const { fps, videoCodec } = input.probe;
   return (fps === null || isFrameRate(fps)) && (videoCodec === null || isStorableText(videoCodec));
@@ -167,7 +174,7 @@ export async function openUpload(deps: MediaDeps, actor: Actor, input: OpenUploa
     id: driveFileId,
     name: driveName(id, input.fileName),
     parentId: await drive.folderId("Originals"),
-    mimeType: input.mimeType,
+    mimeType: input.mimeType === "" ? UNKNOWN_TYPE : input.mimeType, // the row keeps the type as it was given
     sizeBytes: input.sizeBytes,
     origin: deps.origin,
   });
