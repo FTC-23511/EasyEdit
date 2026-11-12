@@ -1,15 +1,6 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { expect, it } from "vitest";
-
-const sources = (dir: string): (readonly [string, string])[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const path = `${dir}/${e.name}`;
-    if (e.isDirectory()) return sources(path);
-    return /\.tsx?$/.test(e.name) ? [[path, readFileSync(path, "utf8")] as const] : [];
-  });
-
-// A static import, a bare side-effect import, a dynamic import() or a require() of React or Next.
-const FRAMEWORK_IMPORT = /\b(?:from|import|require)\s*\(?\s*["'](?:react|react-dom|next)(?:\/[^"']*)?["']/;
+import { FRAMEWORK_IMPORT, sources } from "../helpers/sources";
 
 it("the framework import pattern catches every way of importing", () => {
   for (const line of [

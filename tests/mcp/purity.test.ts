@@ -1,14 +1,5 @@
-import { readFileSync, readdirSync } from "node:fs";
 import { expect, it } from "vitest";
-
-const sources = (dir: string): (readonly [string, string])[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const path = `${dir}/${e.name}`;
-    if (e.isDirectory()) return sources(path);
-    return /\.tsx?$/.test(e.name) ? [[path, readFileSync(path, "utf8")] as const] : [];
-  });
-
-const importsFrom = (pkg: string) => new RegExp(`\\b(?:from|import|require)\\s*\\(?\\s*["']${pkg}(?:/[^"']*)?["']`);
+import { importsFrom, sources } from "../helpers/sources";
 
 it("the tools never see a request: no Next, no auth library, no headers", () => {
   const files = sources("src/lib/mcp");

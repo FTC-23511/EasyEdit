@@ -16,7 +16,12 @@ describe("limits", () => {
       docBytes: 2_097_152, opsPerRequest: 500, opsPageDefault: 100, opsPageMax: 500, opLogRowBytes: 1_048_576,
       opsPageBytes: 2_097_152, trackNameChars: 100, connectorReadChars: 16_000, connectorEchoChars: 6_000,
       connectorListPage: 50, connectorConflictEntries: 10, connectorTextItems: 20, connectorWritesPerMinute: 30,
-      connectorBytesPerDay: 10_485_760, connectorProjectsPerDay: 50, connectorNewIdLines: 50 });
+      connectorBytesPerDay: 10_485_760, connectorProjectsPerDay: 50, connectorNewIdLines: 50,
+      mediaFileBytes: 2_147_483_648, mediaChunkBytes: 8_388_608, mediaParallelUploads: 2, mediaPendingPerMember: 20,
+      mediaPendingMaxAgeMs: 604_800_000, mediaNameChars: 120, mediaEventChars: 80, mediaListMax: 2000,
+      mediaIdsPerRequest: 200, mediaPosterBytes: 1_048_576, mediaDirectPlayBytes: 209_715_200,
+      mediaPreviewWaitMs: 7_200_000, mediaCacheBytes: 2_147_483_648, mediaReadTokenMinSeconds: 600,
+      connectorAssetsPage: 50, connectorMediaItems: 20 });
   });
 
   it("text up to 2,000 characters is accepted; 2,001 is INVALID on add and on update", () => {

@@ -19,6 +19,22 @@ export const LIMITS = {
   connectorBytesPerDay: 10 * 1024 * 1024, // change data one member's Claude may store in a day
   connectorProjectsPerDay: 50, // projects one member's Claude may create in a day
   connectorNewIdLines: 50, // new ids listed after a write; the rest are in the project
+  mediaFileBytes: 2 * 1024 * 1024 * 1024, // one uploaded file
+  mediaChunkBytes: 8 * 1024 * 1024, // one piece of an upload; Drive needs a multiple of 256 KiB
+  mediaParallelUploads: 2, // uploads running at once in one tab
+  mediaPendingPerMember: 20, // unfinished uploads one member may have
+  mediaPendingMaxAgeMs: 7 * 24 * 60 * 60 * 1000, // an unfinished upload older than this is dropped
+  mediaNameChars: 120,
+  mediaEventChars: 80,
+  mediaListMax: 2000, // assets sent to an editor
+  mediaIdsPerRequest: 200, // asset ids one list request may name
+  mediaPosterBytes: 1024 * 1024, // one still picture
+  mediaDirectPlayBytes: 200 * 1024 * 1024, // an original this small may be played when it has no preview copy
+  mediaPreviewWaitMs: 2 * 60 * 60_000, // a preview copy still not made this long after the original was ready is shown as failed
+  mediaCacheBytes: 2 * 1024 * 1024 * 1024, // playback files kept in the browser
+  mediaReadTokenMinSeconds: 600, // a read token handed to a browser has at least this long left
+  connectorAssetsPage: 50, // assets per list_assets page
+  connectorMediaItems: 20, // clips per add_media call
 } as const;
 
 export type Limits = { readonly [K in keyof typeof LIMITS]: number };
