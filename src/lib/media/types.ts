@@ -44,3 +44,19 @@ export type OpenUploadInput = {
   probe: AssetProbe;
   event?: string;
 };
+
+// Where one upload is. `preview`: the original is in, and the preview copy or the still picture is on its way.
+export type UploadStage = "waiting" | "reading" | "uploading" | "finishing" | "preview" | "done" | "failed";
+
+// One row of the upload list.
+export type UploadItem = {
+  key: string;
+  fileName: string;
+  sizeBytes: number;
+  stage: UploadStage;
+  sentBytes: number; // of the original
+  previewFraction: number; // how much of the preview copy is made, 0 to 1
+  assetId: string | null; // null until the server has opened the upload
+  message: string | null; // why it failed, or why a finished upload has no preview copy
+  canRetry: boolean;
+};

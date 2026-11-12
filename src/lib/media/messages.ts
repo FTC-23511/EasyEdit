@@ -37,4 +37,12 @@ export const MEDIA_MESSAGES = {
   wrongFileRole: "A preview copy is for a video, and a still picture for a video or an image.",
   badFileSize: "That file is empty or too large.",
   storageDown: "Google Drive didn't answer. Try again.",
+  // What an upload's row says when it stopped, or when it is done and has no preview copy.
+  uploadStopped: "Upload stopped. Check your connection, then retry.",
+  uploadExpired: "This upload expired. Retry to start it again.",
+  uploadRefused: "Google Drive refused this upload. Tell an admin.",
+  signedOut: "You're signed out. Sign in again, then retry.",
+  lostAccess: "You no longer have edit access.",
+  noPreviewHere: "No preview: this browser can't read this video. It can still be used in projects.",
+  noPreview: "The preview couldn't be made. The file can still be used in projects.",
 };
