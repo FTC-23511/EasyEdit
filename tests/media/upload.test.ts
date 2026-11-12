@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { inspect } from "node:util";
 import { sql, type SQL } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { rowsOf } from "@/db";
@@ -5,6 +7,7 @@ import { DriveError } from "@/lib/drive/token";
 import { LIMITS } from "@/lib/limits";
 import { completeUpload, listAssets, openUpload, uploadOffset } from "@/lib/media/service";
 import type { OpenUploadInput } from "@/lib/media/types";
+import { ServiceError } from "@/lib/service-error";
 import { piece } from "../helpers/fake-drive";
 import { AUDIO, IMAGE, VIDEO, mediaContext, readyAsset, sendAll, type MediaContext } from "./context";
 
@@ -132,6 +135,8 @@ const rows = async <T = Record<string, unknown>>(ctx: MediaContext, query: SQL) 
 const assetIds = async (ctx: MediaContext) => (await rows<{ id: string }>(ctx, sql`select id from assets order by id`)).map((row) => row.id);
 const unfinishedCount = async (ctx: MediaContext) => (await rows<{ n: number }>(ctx, sql`select count(*)::int as n from assets where status = 'uploading'`))[0].n;
 const clip = (name: string): OpenUploadInput => ({ ...VIDEO, fileName: name });
+// An error as a log prints it, with everything it holds and nothing cut short.
+const everythingIn = (error: unknown) => inspect(error, { depth: Infinity, showHidden: true, maxStringLength: Infinity, maxArrayLength: Infinity });
 
 describe("opening an upload", () => {
   it("records the file as the browser described it, and Drive's id for it before a byte is sent", async () => {
@@ -268,6 +273,54 @@ describe("opening an upload", () => {
     expect((await openUpload(ctx.deps, ctx.ada, VIDEO)).asset.id).toBe(first.asset.id);
   });
 
+  it("keeps the session address out of the error when the row cannot be written", async () => {
+    const ctx = await mediaContext();
+    // The database refuses the new row, as it would while it is down. The address is one of the statement's values.
+    await ctx.db.execute(sql`alter table assets add constraint refuses_new_rows check (upload_url is null)`);
+    const failure: unknown = await openUpload(ctx.deps, ctx.ada, VIDEO).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const [address] = ctx.fake.sessions.keys(); // the session was opened, so there is an address to keep
+    expect(address).toContain("upload_id=");
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(ServiceError); // the route answers 500 and logs it
+    expect(failure).toMatchObject({ name: "Error", message: "The upload could not be recorded (database error 23514)." });
+    expect(Object.getOwnPropertyNames(failure).sort()).toEqual(["message", "stack"]); // no cause, no query, no values
+    expect(everythingIn(failure)).not.toContain("upload_id");
+    expect(await assetIds(ctx)).toEqual([]);
+  });
+
+  it("keeps the session address out of the error when the database cannot be reached", async () => {
+    const ctx = await mediaContext();
+    // A lost connection: the failure names the statement's values, and what it calls a code is not a database's.
+    const lost = (): never => {
+      throw Object.assign(new Error(`fetch failed, params: ${[...ctx.fake.sessions.keys()].join()}`), { code: "upload_id=1" });
+    };
+    const db = new Proxy(ctx.db, { get: (target, key) => (key === "insert" ? lost : Reflect.get(target, key)) });
+    const failure: unknown = await openUpload({ ...ctx.deps, db }, ctx.ada, VIDEO).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(ctx.fake.sessions.size).toBe(1);
+    expect(failure).toMatchObject({ name: "Error", message: "The upload could not be recorded." });
+    expect(Object.getOwnPropertyNames(failure).sort()).toEqual(["message", "stack"]);
+    expect(everythingIn(failure)).not.toContain("upload_id");
+  });
+
+  it("keeps the session address out of the error for a file name too long for the database", async () => {
+    const ctx = await mediaContext();
+    // 2,700 characters with no pattern in them: the database packs a repeated character and then holds the name.
+    const name = Array.from({ length: 43 }, (_, i) => createHash("sha256").update(String(i)).digest("hex")).join("").slice(0, 2700);
+    const failure: unknown = await openUpload(ctx.deps, ctx.ada, { ...VIDEO, fileName: `${name}.mov` }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(everythingIn(failure)).not.toContain("upload_id");
+    expect(await assetIds(ctx)).toEqual([]);
+  });
+
   it("drops only this member's own unfinished uploads, and only after seven days", async () => {
     const ctx = await mediaContext();
     const old = await openUpload(ctx.deps, ctx.ada, clip("old.mov"));
@@ -322,10 +375,23 @@ describe("continuing and completing an upload", () => {
     expect(await uploadOffset(ctx.deps, ctx.ada, asset.id)).toEqual({ uploadUrl, offset: 0, done: false });
     await piece(ctx.fake, uploadUrl, 0, 8 * MiB, 20_000_000);
     expect(await uploadOffset(ctx.deps, ctx.ada, asset.id)).toEqual({ uploadUrl, offset: 8 * MiB, done: false });
-    expect(await uploadOffset(ctx.deps, ctx.root, asset.id)).toEqual({ uploadUrl, offset: 8 * MiB, done: false });
+    expect(await uploadOffset(ctx.deps, ctx.root, asset.id)).toEqual({ uploadUrl: null, offset: 8 * MiB, done: false });
     await sendAll(ctx.fake, uploadUrl, 20_000_000, 8 * MiB);
     await completeUpload(ctx.deps, ctx.ada, asset.id);
     expect(await uploadOffset(ctx.deps, ctx.ada, asset.id)).toEqual({ uploadUrl: null, offset: 20_000_000, done: true });
+  });
+
+  it("gives the session address only to the member who opened the upload", async () => {
+    const ctx = await mediaContext();
+    const { asset, uploadUrl } = await openUpload(ctx.deps, ctx.ada, VIDEO);
+    await piece(ctx.fake, uploadUrl, 0, 8 * MiB, 20_000_000);
+    expect(await uploadOffset(ctx.deps, ctx.root, asset.id)).toEqual({ uploadUrl: null, offset: 8 * MiB, done: false });
+    await sendAll(ctx.fake, uploadUrl, 20_000_000, 8 * MiB); // every byte is in, and the upload is not completed
+    expect(await uploadOffset(ctx.deps, ctx.root, asset.id)).toEqual({ uploadUrl: null, offset: 20_000_000, done: true });
+    expect(await uploadOffset(ctx.deps, ctx.ada, asset.id)).toEqual({ uploadUrl, offset: 20_000_000, done: true });
+    // An admin's own upload is theirs like anyone's.
+    const own = await openUpload(ctx.deps, ctx.root, IMAGE);
+    expect(await uploadOffset(ctx.deps, ctx.root, own.asset.id)).toEqual({ uploadUrl: own.uploadUrl, offset: 0, done: false });
   });
 
   it("deletes the row of an upload whose session expired", async () => {

@@ -105,6 +105,15 @@ function valuesOf(row: NewAsset): SQL {
   return sql.join(values, sql`, `);
 }
 
+// The error of a statement that failed holds every value the statement was given, and the database's own account
+// of it can quote the row. One of the new row's values is the session address, which no error may hold. So what is
+// thrown instead keeps the database's five-character error code and nothing else: not the error, not as its cause.
+function notRecorded(error: unknown): Error {
+  const codes = [error, (error as { cause?: unknown } | null)?.cause].map((from) => (from as { code?: unknown } | null)?.code);
+  const code = codes.find((value) => typeof value === "string" && /^[0-9A-Z]{5}$/.test(value));
+  return new Error(code ? `The upload could not be recorded (database error ${code}).` : "The upload could not be recorded.");
+}
+
 // How much of an unfinished upload Drive holds. Null when its session is gone: the row is deleted then.
 async function heldByDrive(deps: MediaDeps, row: AssetRow): Promise<{ offset: number; done: boolean } | null> {
   if (row.uploadUrl !== null) {
@@ -194,13 +203,18 @@ export async function openUpload(deps: MediaDeps, actor: Actor, input: OpenUploa
     removedBy: null,
   };
   // One statement holds the limit and yields to a row for the same file that got there first.
-  const [inserted] = await db
-    .insert(assets)
-    .select(
-      sql`select ${valuesOf(row)} where (select count(*) from assets where uploaded_by = ${actor.userId}::text and status = 'uploading') < ${LIMITS.mediaPendingPerMember}::integer`,
-    )
-    .onConflictDoNothing({ target: [assets.uploadedBy, assets.fileName, assets.sizeBytes, assets.lastModifiedMs], where: sql`status = 'uploading'` })
-    .returning();
+  let inserted: AssetRow | undefined;
+  try {
+    [inserted] = await db
+      .insert(assets)
+      .select(
+        sql`select ${valuesOf(row)} where (select count(*) from assets where uploaded_by = ${actor.userId}::text and status = 'uploading') < ${LIMITS.mediaPendingPerMember}::integer`,
+      )
+      .onConflictDoNothing({ target: [assets.uploadedBy, assets.fileName, assets.sizeBytes, assets.lastModifiedMs], where: sql`status = 'uploading'` })
+      .returning();
+  } catch (error) {
+    throw notRecorded(error);
+  }
   if (inserted) return { asset: await viewOf(db, inserted), uploadUrl, offset: 0 };
 
   // The session opened above is left to expire: no file exists until the last byte.
@@ -223,7 +237,8 @@ export async function uploadOffset(deps: MediaDeps, actor: Actor, assetId: strin
   if (row.status === "ready") return { uploadUrl: null, offset: row.sizeBytes, done: true };
   const held = await heldByDrive(deps, row);
   if (!held) throw new ServiceError("CONFLICT", 409, MEDIA_MESSAGES.sessionExpired);
-  return { uploadUrl: row.uploadUrl, ...held };
+  // The session address goes only to the member who opened the upload. An admin is told how far it has come.
+  return { uploadUrl: row.uploadedBy === actor.userId ? row.uploadUrl : null, ...held };
 }
 
 export async function completeUpload(deps: MediaDeps, actor: Actor, assetId: string): Promise<AssetView> {
