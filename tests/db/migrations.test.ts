@@ -10,7 +10,7 @@ describe("migrations", () => {
       sql`select table_name from information_schema.tables where table_schema='public' order by 1`,
     );
     expect(rowsOf<{ table_name: string }>(r).map((x) => x.table_name)).toEqual(
-      expect.arrayContaining(["account", "allowlist", "project_ops", "projects", "session", "user", "verification"]),
+      expect.arrayContaining(["account", "allowlist", "assets", "project_ops", "projects", "session", "user", "verification"]),
     );
   });
 
@@ -58,5 +58,32 @@ describe("migrations", () => {
     ]));
     const indexes = rowsOf<{ indexname: string }>(await db.execute(sql`select indexname from pg_indexes where tablename = 'project_ops'`)).map((r) => r.indexname);
     expect(indexes).toContain("project_ops_actor_created_at_idx");
+  });
+
+  it("assets holds one unfinished upload per member and file, and only the kinds and states it knows", async () => {
+    const db = await makeTestDb();
+    const columns = rowsOf<{ column_name: string; data_type: string }>(
+      await db.execute(sql`select column_name, data_type from information_schema.columns where table_name = 'assets' and column_name in ('size_bytes', 'last_modified_ms', 'fps')`),
+    );
+    expect(Object.fromEntries(columns.map((c) => [c.column_name, c.data_type]))).toEqual({ size_bytes: "bigint", last_modified_ms: "bigint", fps: "real" }); // a file may be 2 GB
+    const indexes = rowsOf<{ indexname: string }>(await db.execute(sql`select indexname from pg_indexes where tablename = 'assets'`)).map((r) => r.indexname);
+    expect(indexes).toEqual(expect.arrayContaining(["assets_unfinished_upload_unique", "assets_created_at_idx"]));
+
+    const add = (id: string, over: { kind?: string; status?: string; previewStatus?: string; uploadedBy?: string; sizeBytes?: number } = {}) =>
+      db.execute(sql`insert into assets (id, kind, name, file_name, mime_type, size_bytes, last_modified_ms, status, preview_status, uploaded_by)
+        values (${id}, ${over.kind ?? "video"}, 'Clip', 'clip.mp4', 'video/mp4', ${over.sizeBytes ?? 2_147_483_648}, 1762800000000, ${over.status ?? "uploading"}, ${over.previewStatus ?? "none"}, ${over.uploadedBy ?? "u1"})`);
+    await add("a1");
+    await expect(add("a2")).rejects.toThrow(); // the same member, the same file, both unfinished
+    await add("a3", { uploadedBy: "u2" });
+    await add("a4", { sizeBytes: 5 });
+    await add("a5", { status: "ready" });
+    await add("a6", { status: "ready" }); // any number of finished copies
+    await expect(add("a7", { kind: "gif" })).rejects.toThrow();
+    await expect(add("a8", { status: "done", uploadedBy: "u3" })).rejects.toThrow();
+    await expect(add("a9", { previewStatus: "soon", uploadedBy: "u3" })).rejects.toThrow();
+    const [row] = rowsOf<{ status: string; preview_status: string; has_audio: boolean }>(
+      await db.execute(sql`insert into assets (id, kind, name, file_name, mime_type, size_bytes, last_modified_ms, uploaded_by) values ('b1', 'image', 'Field', 'field.jpg', 'image/jpeg', 1, 1, 'u9') returning status, preview_status, has_audio`),
+    );
+    expect(row).toEqual({ status: "uploading", preview_status: "none", has_audio: false });
   });
 });

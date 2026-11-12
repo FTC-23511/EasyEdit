@@ -1,0 +1,35 @@
+CREATE TABLE "assets" (
+	"id" text PRIMARY KEY NOT NULL,
+	"kind" text NOT NULL,
+	"name" text NOT NULL,
+	"file_name" text NOT NULL,
+	"mime_type" text NOT NULL,
+	"size_bytes" bigint NOT NULL,
+	"last_modified_ms" bigint NOT NULL,
+	"status" text DEFAULT 'uploading' NOT NULL,
+	"drive_file_id" text,
+	"upload_url" text,
+	"duration_ms" integer,
+	"width" integer,
+	"height" integer,
+	"fps" real,
+	"has_audio" boolean DEFAULT false NOT NULL,
+	"video_codec" text,
+	"preview_status" text DEFAULT 'none' NOT NULL,
+	"preview_file_id" text,
+	"poster_file_id" text,
+	"pending_preview_file_id" text,
+	"pending_poster_file_id" text,
+	"event" text,
+	"uploaded_by" text NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL,
+	"ready_at" timestamp,
+	"removed_at" timestamp,
+	"removed_by" text,
+	CONSTRAINT "assets_kind_check" CHECK ("assets"."kind" in ('video', 'image', 'audio')),
+	CONSTRAINT "assets_status_check" CHECK ("assets"."status" in ('uploading', 'ready')),
+	CONSTRAINT "assets_preview_status_check" CHECK ("assets"."preview_status" in ('none', 'pending', 'ready', 'failed'))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX "assets_unfinished_upload_unique" ON "assets" USING btree ("uploaded_by","file_name","size_bytes","last_modified_ms") WHERE "assets"."status" = 'uploading';--> statement-breakpoint
+CREATE INDEX "assets_created_at_idx" ON "assets" USING btree ("created_at");
