@@ -476,6 +476,26 @@ function cutOffBody(): ReadableStream<Uint8Array> {
   });
 }
 
+// A body of three 1 MB chunks, each of which arrives a little after it is asked for, as a download's do.
+// `stopped` gets the reason when the body is cancelled.
+function arrivingBody(stopped: unknown[]): ReadableStream<Uint8Array> {
+  let given = 0;
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (cancelled) return;
+      if (given === 3) return controller.close();
+      given += 1;
+      controller.enqueue(new Uint8Array(MB));
+    },
+    cancel(reason) {
+      cancelled = true;
+      stopped.push(reason);
+    },
+  });
+}
+
 const gate = () => {
   let open!: () => void;
   const opened = new Promise<void>((resolve) => (open = resolve));
@@ -1002,6 +1022,63 @@ describe("the files this browser keeps", () => {
     expect(got.ok && got.blob.size).toBe(3 * MB);
     expect(stopped).toEqual(["no room"]);
     expect(h.reads).toEqual(["f1", "f1"]);
+  });
+
+  // A full disk says so in the middle of a file, not before its first byte: the store has taken a chunk or two,
+  // and the next one is still on its way. `fill` is what the store does with the body before it rejects.
+  async function fullPartWay(fill: (body: ReadableStream<Uint8Array>) => Promise<unknown>) {
+    const h = filesHarness({ f1: 3 * MB, f2: 3 * MB });
+    const stopped: unknown[] = [];
+    const offered: string[] = [];
+    const full: FileStore = {
+      ...h.store,
+      async write(fileId, body) {
+        offered.push(fileId);
+        if (!(body instanceof Blob)) await fill(body);
+        throw new DOMException("The disk is full.", "QuotaExceededError");
+      },
+    };
+    const files = createMediaFiles({ tokens: h.tokens, store: full, fetch: h.fetch, now: h.now });
+    h.net.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      h.reads.length === 1 ? Promise.resolve(new Response(arrivingBody(stopped), { status: 200, headers: { "Content-Length": String(3 * MB) } })) : h.fake.fetch(input, init)) as typeof fetch;
+    const first = await files.get("f1");
+    expect(first.ok && first.blob.size).toBe(3 * MB);
+    expect(h.reads).toEqual(["f1", "f1"]); // once into the store, which lost it, and once more without the store
+    expect(stopped).toHaveLength(1); // the download the store gave up on was stopped
+    const next = await files.get("f2");
+    expect(next.ok && next.blob.size).toBe(3 * MB);
+    await files.put("made", new Blob(["x"]));
+    expect(h.reads).toEqual(["f1", "f1", "f2"]);
+    expect(offered).toEqual(["f1"]);
+    expect(await h.stored()).toEqual([]);
+  }
+
+  it("a store that fills up while it pipes a file that is still arriving is left out, and the file is read once more", async () => {
+    for (const failingChunk of [1, 2]) {
+      let chunks = 0;
+      await fullPartWay((body) =>
+        body.pipeTo(
+          new WritableStream<Uint8Array>({
+            write() {
+              chunks += 1;
+              if (chunks === failingChunk) throw new DOMException("full", "QuotaExceededError");
+            },
+          }),
+        ),
+      );
+      expect(chunks).toBe(failingChunk);
+    }
+  });
+
+  it("a store that takes some of a file that is still arriving, then cancels it, is left out, and the file is read once more", async () => {
+    for (const taken of [1, 2]) {
+      await fullPartWay(async (body) => {
+        const reader = body.getReader();
+        for (let n = 0; n < taken; n += 1) expect((await reader.read()).value).toHaveLength(MB);
+        await new Promise((resolve) => setTimeout(resolve, 1)); // putting the chunk on disk, which fails; the next one is asked for meanwhile
+        await reader.cancel("full");
+      });
+    }
   });
 
   it("a store that cannot say when a file was used still hands it out, and keeps it", async () => {

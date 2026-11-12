@@ -56,18 +56,27 @@ function declaredLength(response: Response): number | null {
 function watched(body: ReadableStream<Uint8Array>): { body: ReadableStream<Uint8Array>; broke: () => boolean } {
   const reader = body.getReader();
   let broke = false;
+  let stopped = false; // the store gave up on the body: what the download does after that is not the body breaking
   const passedOn = new ReadableStream<Uint8Array>({
     async pull(controller) {
+      let read;
       try {
-        const { done, value } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(value);
+        read = await reader.read();
       } catch (error) {
+        if (stopped) return;
         broke = true;
         controller.error(error);
+        return;
       }
+      if (stopped) return; // a chunk that was on its way when the store gave up has nowhere to go
+      if (read.done) controller.close();
+      else controller.enqueue(read.value);
     },
-    cancel: (reason) => reader.cancel(reason), // a store that gives up on the body stops the download
+    // A store that gives up on the body stops the download.
+    cancel: (reason) => {
+      stopped = true;
+      return reader.cancel(reason);
+    },
   });
   return { body: passedOn, broke: () => broke };
 }
