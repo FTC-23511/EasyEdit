@@ -7,6 +7,7 @@ import { LIMITS } from "@/lib/limits";
 import { completeAssetFile, failPreview, listAssets, loadAssetFacts, openAssetFile, openUpload, removeAsset, updateAsset, type AssetFileRole } from "@/lib/media/service";
 import { applyProjectOps, createProject, deleteProject, getProject } from "@/lib/projects/service";
 import type { OpInput } from "@/lib/timeline";
+import { piece } from "../helpers/fake-drive";
 import { AUDIO, CLIP_TRANSFORM, IMAGE, VIDEO, mediaClip, mediaContext, readyAsset, sendAll, type MediaContext } from "./context";
 
 const GONE = { code: "NOT_FOUND", status: 404, message: "That file is no longer in the library." };
@@ -349,6 +350,45 @@ describe("removing an asset", () => {
     expect(trashCalls(ctx)).toBe(0); // nothing is in Drive yet
   });
 
+  it("cancels the Drive session of a canceled upload, so it takes no more pieces", async () => {
+    const ctx = await mediaContext();
+    const reported = reportedBy(ctx);
+    const mine = await openUpload(ctx.deps, ctx.ada, VIDEO);
+    expect((await piece(ctx.fake, mine.uploadUrl, 0, LIMITS.mediaChunkBytes, VIDEO.sizeBytes)).status).toBe(308); // the first piece is in
+    const hers = await openUpload(ctx.deps, ctx.grace, VIDEO);
+    const kept = await openUpload(ctx.deps, ctx.ada, LATER);
+    await removeAsset(ctx.deps, ctx.ada, mine.asset.id);
+    await removeAsset(ctx.deps, ctx.root, hers.asset.id); // an admin cancels another member's
+    for (const { uploadUrl } of [mine, hers]) {
+      expect((await piece(ctx.fake, uploadUrl, 0, LIMITS.mediaChunkBytes, VIDEO.sizeBytes)).status).toBe(499);
+      await expect(sendAll(ctx.fake, uploadUrl, VIDEO.sizeBytes)).rejects.toThrow("answered 499");
+    }
+    expect(ctx.fake.calls.filter((call) => call.method === "DELETE")).toEqual([
+      { method: "DELETE", path: "/upload/drive/v3/files", scope: null, origin: null },
+      { method: "DELETE", path: "/upload/drive/v3/files", scope: null, origin: null },
+    ]);
+    await sendAll(ctx.fake, kept.uploadUrl, VIDEO.sizeBytes); // only those two
+    expect(reported).toEqual([]);
+  });
+
+  it("removes the row of a canceled upload when its session cannot be canceled, and reports that", async () => {
+    const ctx = await mediaContext();
+    const reported = reportedBy(ctx);
+    const { asset, uploadUrl } = await openUpload(ctx.deps, ctx.ada, VIDEO);
+    ctx.fake.failNext(/^DELETE \/upload\//, 500, "backendError");
+    await expect(removeAsset(ctx.deps, ctx.ada, asset.id)).resolves.toBeUndefined();
+    expect(await assetCount(ctx)).toBe(0);
+    expect(reported).toEqual([["cancel", 500, "backendError"]]);
+    expect(ctx.fake.sessions.has(uploadUrl)).toBe(true);
+    // A failure that is not Drive's answer is not hidden, and the row is gone all the same.
+    const again = await openUpload(ctx.deps, ctx.ada, VIDEO);
+    const broken = new TypeError("not Drive");
+    const drive = { ...ctx.deps.drive, cancelSession: () => Promise.reject(broken) };
+    await expect(removeAsset({ ...ctx.deps, drive }, ctx.ada, again.asset.id)).rejects.toBe(broken);
+    expect(await assetCount(ctx)).toBe(0);
+    expect(reported).toHaveLength(1);
+  });
+
   it("cancels an upload whose bytes are all in Drive but which was never completed", async () => {
     const ctx = await mediaContext();
     const { asset, uploadUrl } = await openUpload(ctx.deps, ctx.ada, VIDEO);
@@ -478,9 +518,24 @@ describe("the preview copy's and the still picture's files", () => {
     await expect(completeAssetFile(ctx.deps, ctx.ada, asset.id, "preview")).rejects.toMatchObject(NOT_FINISHED);
     await sendAll(ctx.fake, second.uploadUrl, 3_000_000);
     expect((await completeAssetFile(ctx.deps, ctx.ada, asset.id, "preview")).previewFileId).toBe(secondId);
-    // Once it is in, there is nothing left to complete.
-    await expect(completeAssetFile(ctx.deps, ctx.ada, asset.id, "preview")).rejects.toMatchObject(NOT_FINISHED);
+    // Once it is in, a repeat is not an error: it answers the view.
+    expect(await completeAssetFile(ctx.deps, ctx.ada, asset.id, "preview")).toEqual(await viewOf(ctx, asset.id));
     expect((await viewOf(ctx, asset.id)).previewFileId).toBe(secondId);
+  });
+
+  it("answers a repeated complete with the view once the file is in, and asks Drive nothing", async () => {
+    const ctx = await mediaContext();
+    const asset = await readyAsset(ctx);
+    for (const role of ["preview", "poster"] as const) {
+      const { view, fileId } = await sendFile(ctx, asset.id, role);
+      const calls = ctx.fake.calls.length;
+      expect(await completeAssetFile(ctx.deps, ctx.ada, asset.id, role), role).toEqual(view);
+      expect(ctx.fake.calls.length, role).toBe(calls);
+      expect(isTrashed(ctx, fileId), role).toBe(false);
+    }
+    // With none ever opened, there is still nothing to complete.
+    const image = await readyAsset(ctx, ctx.ada, IMAGE);
+    await expect(completeAssetFile(ctx.deps, ctx.ada, image.id, "poster")).rejects.toMatchObject(NOT_FINISHED);
   });
 
   it("refuses files that make no sense", async () => {

@@ -298,6 +298,34 @@ describe("the Drive client", () => {
     }
   });
 
+  it("cancels a session with a DELETE and no token, after which it takes no more pieces", async () => {
+    const { fake, sent, drive } = watched();
+    const url = await drive.openUploadSession({ id: "x", name: "n", parentId: await drive.folderId("Originals"), mimeType: "video/mp4", sizeBytes: MiB, origin: "https://app.test" });
+    await expect(drive.cancelSession(url)).resolves.toBeUndefined(); // the real one answered 499 (drive-facts 11)
+    expect(sent.at(-1)).toEqual({ method: "DELETE", url, headers: {}, body: undefined }); // the address is the permission: no token
+    expect(fake.calls.at(-1)).toEqual({ method: "DELETE", path: "/upload/drive/v3/files", scope: null, origin: null });
+    expect((await piece(fake, url, 0, MiB, MiB)).status).toBe(499);
+    await expect(drive.uploadOffset(url, MiB)).rejects.toMatchObject({ call: "session", reason: "expired" });
+  });
+
+  it("takes a session that is already gone for canceled, and reduces any other failure to a DriveError with no address", async () => {
+    const { fake, drive } = client();
+    const url = await drive.openUploadSession({ id: "x", name: "n", parentId: await drive.folderId("Originals"), mimeType: "video/mp4", sizeBytes: MiB, origin: "https://app.test" });
+    for (const status of [404, 410, 499]) {
+      fake.failNext(/^DELETE \/upload\//, status, "notFound");
+      await expect(drive.cancelSession(url), String(status)).resolves.toBeUndefined();
+    }
+    for (const status of [400, 403, 500]) {
+      fake.failNext(/^DELETE \/upload\//, status, "backendError");
+      const error = await drive.cancelSession(url).catch((e) => e);
+      expect(error).toBeInstanceOf(DriveError);
+      expect(error).toMatchObject({ call: "cancel", status, reason: "backendError" });
+      expect(Object.keys(error).sort()).toEqual(["call", "name", "reason", "status"]);
+      expect(inspect(error, { depth: 10 }) + JSON.stringify(error) + error.stack).not.toMatch(/googleapis|upload_id/);
+    }
+    expect((await piece(fake, url, 0, MiB, MiB)).status).toBe(200); // none of those reached the session
+  });
+
   it("asks a session where it is without a token", async () => {
     const { fake, drive } = client();
     const url = await drive.openUploadSession({ id: "x", name: "n", parentId: await drive.folderId("Originals"), mimeType: "video/mp4", sizeBytes: MiB, origin: "https://app.test" });
@@ -418,6 +446,7 @@ describe("the Drive client", () => {
       [/^POST \/drive\/v3\/files\?/, "folder", 1, () => drive.folderId("Previews")], // making it
       [/^POST \/upload\//, "session", 0, () => drive.openUploadSession(session)],
       [/^PUT \/upload\//, "session", 0, () => drive.uploadOffset(url, MiB)],
+      [/^DELETE \/upload\//, "cancel", 0, () => drive.cancelSession(url)],
       [/^GET \/drive\/v3\/files\/[^?]+\?/, "file", 0, () => drive.getFile(id)],
       [/^PATCH /, "trash", 0, () => drive.trashFile(parentId)],
     ];

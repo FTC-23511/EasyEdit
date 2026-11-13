@@ -26,12 +26,20 @@ export async function listAssetsTool(ctx: ToolContext, input: { kind?: AssetKind
   const lines = [matches.length === 1 ? "1 asset:" : `${matches.length} assets, newest first:`];
   for (const asset of page) lines.push(assetLine(asset, now));
   const end = start + page.length;
-  if (end < matches.length) lines.push(`Showing ${start + 1}–${end} of ${matches.length}. Call list_assets with cursor ${end} for more.`);
+  if (end < matches.length) lines.push(`Showing ${start + 1}–${end} of ${matches.length}. Call list_assets with ${nextCall(input, end)} for more.`);
   lines.push(CLOSING);
   return ok(lines.join("\n"));
 }
 
 const quoted = (text: string) => `"${escapeQuoted(oneLine(text))}"`;
+
+// The arguments of the call for the next page: the same filter, and the cursor.
+function nextCall(input: { kind?: AssetKind; search?: string }, cursor: number): string {
+  const filter: string[] = [];
+  if (input.kind !== undefined) filter.push(`kind ${quoted(input.kind)}`);
+  if (input.search !== undefined) filter.push(`search ${quoted(input.search)}`);
+  return filter.length === 0 ? `cursor ${cursor}` : `${filter.join(", ")} and cursor ${cursor}`;
+}
 
 function assetLine(asset: AssetView, now: Date): string {
   const parts = [asset.id, asset.kind, quoted(asset.name)];

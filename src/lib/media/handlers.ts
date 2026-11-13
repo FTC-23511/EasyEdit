@@ -125,11 +125,22 @@ export function makeMediaHandlers(deps: MediaHandlerDeps) {
     return drive ? { db: deps.db(), drive, origin: deps.origin(), onDriveError: logDriveError } : null;
   };
 
+  // Whether uploads are set up, as the list tells it. Settings that cannot be read (a key that is not base64) count
+  // as not set up there, so the library still lists. The one line says only that; nothing of the key is logged.
+  const isSetUp = (): boolean => {
+    try {
+      return deps.drive() !== null;
+    } catch {
+      console.error("Drive settings could not be read");
+      return false;
+    }
+  };
+
   return {
     list: mediaRoute(deps, async (actor, req) => {
       const ids = idsOf(req);
       const assets = await listAssets(deps.db(), actor, { ids });
-      return Response.json({ assets, setUp: deps.drive() !== null });
+      return Response.json({ assets, setUp: isSetUp() });
     }),
 
     open: mediaRoute(deps, async (actor, req) => {

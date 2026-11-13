@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CurrentUser } from "@/lib/access-rules";
 import type { Actor } from "@/lib/actor";
 import { createDriveClient } from "@/lib/drive/client";
+import { driveConfig } from "@/lib/drive/config";
 import { SCOPE_READ } from "@/lib/drive/token";
 import { LIMITS } from "@/lib/limits";
 import { NOT_SET_UP_BODY, STORAGE_DOWN_BODY, makeMediaHandlers, makeReadTokenHandler, type MediaHandlerDeps } from "@/lib/media/handlers";
@@ -158,8 +159,12 @@ describe("the media API", () => {
     await sendAll(ctx.fake, (preview.body as { uploadUrl: string }).uploadUrl, 2_000_000);
     const withPreview = await answer(await api.completeFile(post(`${path}/complete`, { role: "preview" }), at(asset.id)));
     expect(withPreview.body).toMatchObject({ asset: { previewStatus: "ready", previewFileId: expect.any(String) } });
+    // A repeat once the file is in answers the view.
+    expect(await answer(await api.completeFile(post(`${path}/complete`, { role: "preview" }), at(asset.id)))).toEqual(withPreview);
     // What the service refuses keeps the service's status and sentence.
-    expect(await answer(await api.completeFile(post(`${path}/complete`, { role: "preview" }), at(asset.id)))).toEqual(refusedAs(409, { code: "CONFLICT", message: "The upload is not finished." }));
+    const image = await readyAsset(ctx, ctx.ada, IMAGE);
+    const none = await api.completeFile(post(`/api/media/${image.id}/files/complete`, { role: "poster" }), at(image.id)); // none was opened
+    expect(await answer(none)).toEqual(refusedAs(409, { code: "CONFLICT", message: "The upload is not finished." }));
   });
 
   it("a viewer can list and get a read token, and nothing else", async () => {
@@ -243,6 +248,23 @@ describe("the media API", () => {
     const failed = await answer(await api.previewFailed(post(`${path}/preview-failed`), at(asset.id)));
     expect(failed).toEqual({ status: 200, body: { asset: { ...asset, name: "Kickoff", previewStatus: "failed" } } });
     expect(await answer(await api.list(request("GET", `/api/media?ids=${asset.id}`)))).toEqual({ status: 200, body: { assets: [(failed.body as { asset: unknown }).asset], setUp: false } });
+  });
+
+  it("lists the library when the Drive settings cannot be read, says uploads are not set up, and leaves one line", async () => {
+    const ctx = await mediaContext();
+    const asset = await readyAsset(ctx);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The key pasted as the JSON file itself, not in base64: reading the settings throws, as the server's Drive does then.
+    const rawKey = JSON.stringify({ type: "service_account", client_email: ctx.fake.config.clientEmail, private_key: ctx.fake.config.privateKey });
+    const drive = () => {
+      const config = driveConfig({ GOOGLE_SERVICE_ACCOUNT_KEY: rawKey, DRIVE_FOLDER_ID: "folder1" });
+      return config ? createDriveClient({ config }) : null;
+    };
+    expect(drive).toThrow("GOOGLE_SERVICE_ACCOUNT_KEY is not a service account key");
+    const api = handlersFor(ctx, ctx.ada, { drive });
+    expect(await answer(await api.list(request("GET")))).toEqual({ status: 200, body: { assets: [asset], setUp: false } });
+    expect(await answer(await api.list(request("GET", `/api/media?ids=${asset.id}`)))).toEqual({ status: 200, body: { assets: [asset], setUp: false } });
+    expect(log.mock.calls).toEqual([["Drive settings could not be read"], ["Drive settings could not be read"]]);
   });
 
   it("a Drive failure is a 502 that says nothing about Drive", async () => {
@@ -352,6 +374,20 @@ describe("the media API", () => {
     expect(log.mock.calls).toEqual([["Drive call failed", "trash", 403, "insufficientFilePermissions"]]);
     const listed = (await answer(await api.list(request("GET")))).body as { assets: { id: string }[] };
     expect(listed.assets.map((item) => item.id)).toEqual([kept.id]);
+  });
+
+  it("an upload session Drive would not cancel is the same one line, with no address, and the upload is canceled", async () => {
+    const ctx = await mediaContext();
+    const api = handlersFor(ctx, ctx.ada);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { asset, uploadUrl } = await openUpload(ctx.deps, ctx.ada, VIDEO);
+    ctx.fake.failNext(/^DELETE \/upload\//, 503, "backendError");
+    const canceled = await api.remove(request("DELETE", `/api/media/${asset.id}`), at(asset.id));
+    expect(canceled.status).toBe(204);
+    expect(await canceled.text()).toBe("");
+    expect(log.mock.calls).toEqual([["Drive call failed", "cancel", 503, "backendError"]]);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(new URL(uploadUrl).searchParams.get("upload_id")!);
+    expect(await answer(await api.list(request("GET")))).toEqual({ status: 200, body: { assets: [], setUp: true } });
   });
 
   it("a failure that is not Drive's is still a 500", async () => {

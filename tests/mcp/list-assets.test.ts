@@ -92,6 +92,24 @@ describe("list_assets", () => {
     expect(last.text.split("\n").at(-1)).toBe(CLOSING);
   });
 
+  it("names the filter in the paging line, so the next page is of the same list", async () => {
+    const { db, ctx } = await setup();
+    for (let i = 0; i < 60; i++) {
+      await insertAsset(db, { name: `intake ${i}`, createdAt: ago(i * 2000) });
+      await insertAsset(db, { ...IMAGE_ROW, name: `pit ${i}`, event: 'Day "2"', createdAt: ago(i * 2000 + 1000) });
+    }
+    const paging = (text: string) => text.split("\n").at(-2);
+    expect(paging((await listAssetsTool(ctx, { kind: "video" })).text)).toBe('Showing 1–50 of 60. Call list_assets with kind "video" and cursor 50 for more.');
+    expect(paging((await listAssetsTool(ctx, { search: "pit" })).text)).toBe('Showing 1–50 of 60. Call list_assets with search "pit" and cursor 50 for more.');
+    expect(paging((await listAssetsTool(ctx, { kind: "image", search: 'day "2' })).text)).toBe('Showing 1–50 of 60. Call list_assets with kind "image", search "day \\"2" and cursor 50 for more.');
+    expect(paging((await listAssetsTool(ctx, {})).text)).toBe("Showing 1–50 of 120. Call list_assets with cursor 50 for more.");
+    // Doing what the line says gives the rest of the same list.
+    const next = await listAssetsTool(ctx, { kind: "video", cursor: 50 });
+    expect(next.text.split("\n")[0]).toBe("60 assets, newest first:");
+    expect(assetLines(next.text)).toHaveLength(10);
+    expect(assetLines(next.text).every((line) => line.includes('video  "intake'))).toBe(true);
+  });
+
   it("never lists removed or unfinished assets, and a viewer may call it", async () => {
     const { db, ctx } = await setup();
     const ready = await insertAsset(db, { name: "ready" });

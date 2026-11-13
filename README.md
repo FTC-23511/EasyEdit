@@ -112,10 +112,10 @@ Uploaded video, images and audio are kept in a folder of a Google shared drive. 
 
 1. **A folder in a shared drive.** In Google Drive, in a team shared drive where you may share folders: New folder, name it `EasyEdit`. Open the folder and copy the id from the address bar (the part after `/folders/`). This is `DRIVE_FOLDER_ID`.
 2. **Let an outside account in (only if step 6 is refused).** The service account's address ends in `gserviceaccount.com`, so it is outside the domain, and it will not be a member of the shared drive. A manager of the shared drive opens the drive's name, Shared drive settings, and turns on "Allow people outside Seattle Solvers to access files" and "Allow people who aren't shared drive members to access files". If the switch is missing or greyed out, a Workspace admin must allow it first: admin.google.com, Apps, Google Workspace, Drive and Docs, Sharing settings, "Sharing outside of Seattle Solvers" on for the unit that owns the drive.
-3. **The Drive API.** In Google Cloud project `easyedit-514403` (the one that holds the sign-in client): APIs & Services, Library, "Google Drive API", Enable.
+3. **The Drive API.** In the Google Cloud project that holds the sign-in client: APIs & Services, Library, "Google Drive API", Enable.
 4. **A service account.** IAM & Admin, Service Accounts, Create service account, name `easyedit-media`. Give it no project role. Skip the optional steps.
 5. **Its key.** Open the service account, Keys, Add key, Create new key, JSON. Move the downloaded file to `~/.config/easyedit/drive-service-account.json` and run `chmod 600` on it. If Google refuses with a policy named `iam.disableServiceAccountKeyCreation`, an organization admin must switch that policy off for this project first.
-6. **Share the folder with it.** On the `EasyEdit` folder: Share, add the service account's address (`easyedit-media@easyedit-514403.iam.gserviceaccount.com`), role **Content manager**, untick "Notify people". Do not add it as a member of the drive.
+6. **Share the folder with it.** On the `EasyEdit` folder: Share, add the service account's address (it ends in `iam.gserviceaccount.com`; the service account's page in Google Cloud shows it), role **Content manager**, untick "Notify people". Do not add it as a member of the drive.
 7. **Put the two settings in `.env.local`.** Encode the key on one line:
 
     ```bash
@@ -393,6 +393,7 @@ When a route refuses a request, the answer has this shape:
 - **"Too many requests" while signing in or connecting.** The rate limit. Wait a minute.
 - **The website's own sign-in answers with an error after a deploy.** The migration is not on the live database. Run `pnpm db:migrate` against it (see [Connect Claude](#connect-claude)), or use Vercel's **Promote** on the previous deployment to go back.
 - **The Media tab says uploads are not set up.** `GOOGLE_SERVICE_ACCOUNT_KEY` or `DRIVE_FOLDER_ID` is missing where the app runs: in `.env.local` on your computer, or in Vercel's Environment Variables on the deployed app. See [Set up media storage](#set-up-media-storage), then restart or redeploy.
+- **The Media tab says "Couldn't load the library" or that uploads are not set up, while both settings are there.** The key was pasted as the raw JSON file instead of in base64, and the server log says "Drive settings could not be read". Encode the key file with the command in [Set up media storage](#set-up-media-storage), item 7, put what it prints after `GOOGLE_SERVICE_ACCOUNT_KEY=`, then restart or redeploy.
 - **Uploads fail at once on the deployed app but work locally.** `BETTER_AUTH_URL` is not the address in the browser. Set it to the exact address people open, with no slash at the end, and redeploy.
 - **A video shows "No preview".** Either the uploader's browser could not read it: upload it again from Chrome or Edge on a Mac, or convert it to H.264 first. Or the uploader left the editor or canceled while the preview was being made: remove it and upload it again.
 

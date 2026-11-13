@@ -18,6 +18,7 @@ export type DriveClient = {
   openUploadSession(input: { id: string; name: string; parentId: string; mimeType: string; sizeBytes: number; origin: string }): Promise<string>;
   // How much of an upload Drive holds. fileId is set when Drive's answer names the finished file.
   uploadOffset(sessionUrl: string, sizeBytes: number): Promise<{ done: boolean; offset: number; fileId: string | null }>;
+  cancelSession(sessionUrl: string): Promise<void>; // a session that is already gone is not an error
   getFile(id: string): Promise<DriveFile | null>; // null when Drive has no such file
   trashFile(id: string): Promise<void>; // a file that is already gone is not an error
   readToken(minSecondsLeft: number): Promise<GoogleToken>; // read-only; the only token that may leave the server
@@ -136,6 +137,12 @@ export function createDriveClient(deps: { config: DriveConfig; fetch?: typeof fe
       }
       if (DEAD_SESSION.includes(answer.status)) throw new DriveError("session", answer.status, "expired");
       throw await refused("session", answer);
+    },
+
+    async cancelSession(sessionUrl) {
+      // No token: the address is the permission. A canceled session answers 499, and goes on answering it.
+      const answer = await reach(fetchFn, "cancel", sessionUrl, { method: "DELETE" });
+      if (!answer.ok && !DEAD_SESSION.includes(answer.status)) throw await refused("cancel", answer);
     },
 
     async getFile(id) {

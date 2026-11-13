@@ -86,6 +86,39 @@ describe("add_media", () => {
     expect(spans("a1")).toEqual([["audio", 0, 50], ["audio", 50, 30]]);
   });
 
+  // A track_id whose track cannot take the asset counts as not given, for the start and for the track.
+  const withMusic = async () => {
+    const made = await setup();
+    const music = await insertAsset(made.db, { kind: "audio", name: "theme", durationMs: 95_000, width: null, height: null, fps: null, videoCodec: null, previewStatus: "none" });
+    const spans = async (trackId: string) => (await getProject(made.db, made.ctx.actor, made.id))!.doc.tracks.find((t) => t.id === trackId)!.clips.map((c) => [c.type, c.start, c.duration]);
+    return { ...made, music, spans };
+  };
+
+  it("starts a video that names the audio track at the end of the video track, not of the audio track", async () => {
+    const { db, ctx, video, music, id, spans } = await withMusic();
+    await applyProjectOps(db, ctx.actor, { projectId: id, baseVersion: 0, ops: [{ op: "add_clip", trackId: "a1", clip: { ...mediaClip(music, { type: "audio" }), id: "m1", duration: 1800 } }] as OpInput[] }); // 60 s of music
+    expect((await addMediaTool(ctx, { project_id: id, expected_version: 1, items: [{ asset_id: video, duration_seconds: 1, track_id: "a1" }] })).isError).toBe(false);
+    expect(await spans("v1")).toEqual([["video", 0, 30]]);
+    expect(await spans("a1")).toEqual([["audio", 0, 1800]]);
+  });
+
+  it("puts a video and an audio item that both name the video track each on a track of its kind", async () => {
+    const { ctx, video, music, id, spans } = await withMusic();
+    const both = await addMediaTool(ctx, { project_id: id, expected_version: 0, items: [{ asset_id: video, track_id: "v1" }, { asset_id: music, duration_seconds: 2, track_id: "v1" }] });
+    expect(both.isError).toBe(false);
+    expect(both.text.split("\n")[0]).toBe("Added 2 clips as version 1.");
+    expect(await spans("v1")).toEqual([["video", 0, 375]]);
+    expect(await spans("a1")).toEqual([["audio", 375, 60]]);
+  });
+
+  it("gives the media's length in whole frames when in_seconds is past the end", async () => {
+    const { db, ctx, id, clips } = await setup();
+    const odd = await insertAsset(db, { name: "odd", durationMs: 12_520 }); // 375 frames at 30 fps: 12.50 s, not 12.52
+    const outside = await addMediaTool(ctx, { project_id: id, expected_version: 0, items: [{ asset_id: odd, in_seconds: 12.5 }] });
+    expect(outside).toEqual({ isError: true, text: "items[0]: in_seconds is past the end of the media, which is 12.50 s long.\nNothing was applied." });
+    expect(await clips()).toEqual([]);
+  });
+
   it("says when an asset was removed or is still uploading", async () => {
     const { db, ctx, video, id } = await setup();
     const removed = await insertAsset(db, { removedAt: new Date(), removedBy: "u1" });

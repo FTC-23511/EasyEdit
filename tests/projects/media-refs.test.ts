@@ -313,6 +313,63 @@ describe("a project's media must exist: more of each rule", () => {
   });
 });
 
+// A split copies what earlier ops of the same batch did to its clip, so the new piece is checked as that clip is.
+describe("a project's media must exist: a split of a clip the batch changed", () => {
+  const split = (clipId: string, at: number, newClipId: string) => ({ op: "split_clip", clipId, at, newClipId });
+  const removeClip = (clipId: string) => ({ op: "remove_clip", clipId });
+  const past = (frames: number) => ({ code: "TRIM_OUT_OF_RANGE", status: 400, opIndex: 1, message: `split_clip (op 1): clip "r1" would run past the end of its media, which is ${frames} frames long` });
+  const withClip = async (duration = 300) => {
+    const made = await setup(); // 375 frames
+    expect((await made.send([add(clip("video", made.video.id, { duration }))], 0)).version).toBe(1);
+    return made;
+  };
+
+  it("refuses a speed change and then a split, whose right piece runs past the end", async () => {
+    const { send } = await withClip();
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { speed: 2 } }, split("c1", 100, "r1")], 1)).rejects.toMatchObject(past(375)); // r1 ends at 600
+  });
+
+  it("refuses pointing a clip at shorter media and then a split, whose right piece runs past the end", async () => {
+    const { ctx, send } = await withClip();
+    const short = await insertAsset(ctx.db, { durationMs: 2_000 }); // 60 frames
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { assetId: short } }, split("c1", 50, "r1")], 1)).rejects.toMatchObject(past(60)); // r1 ends at 300
+  });
+
+  it("refuses a speed change, a split and removing the left piece, when the right piece runs past the end", async () => {
+    const { send } = await withClip();
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { speed: 4 } }, split("c1", 100, "r1"), removeClip("c1")], 1)).rejects.toMatchObject(past(375)); // r1.in is 400
+  });
+
+  it("refuses pointing a clip at another kind of media, a split and removing the left piece", async () => {
+    const { ctx, send } = await withClip();
+    const audio = await readyAsset(ctx, ctx.ada, AUDIO);
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { assetId: audio.id } }, split("c1", 150, "r1"), removeClip("c1")], 1)).rejects.toMatchObject({
+      code: "INVALID", status: 400, opIndex: 0, message: `update_clip (op 0): asset "${audio.id}" is audio, so it cannot be used by a video clip`,
+    });
+  });
+
+  it("follows a piece split off a piece", async () => {
+    const { send } = await withClip();
+    await expect(send([{ op: "update_clip", clipId: "c1", patch: { speed: 4 } }, split("c1", 50, "r1"), split("r1", 100, "r2"), removeClip("c1"), removeClip("r1")], 1)).rejects.toMatchObject({
+      code: "TRIM_OUT_OF_RANGE", opIndex: 2, message: 'split_clip (op 2): clip "r2" would run past the end of its media, which is 375 frames long',
+    });
+  });
+
+  it("takes a split of a changed clip whose pieces stay inside the media, and its undo", async () => {
+    const { ctx, id, send } = await withClip(150);
+    const clips = async () => (await getProject(ctx.db, ctx.ada, id))!.doc.tracks.flatMap((t) => t.clips);
+    const before = await clips();
+    const both = await send([{ op: "update_clip", clipId: "c1", patch: { speed: 2 } }, split("c1", 100, "r1")], 1); // r1 ends at 300
+    expect(both.version).toBe(2);
+    expect((await send(both.inverse, 2)).version).toBe(3);
+    expect(await clips()).toEqual(before);
+    const right = await send([{ op: "update_clip", clipId: "c1", patch: { speed: 2 } }, split("c1", 100, "r1"), removeClip("c1")], 3);
+    expect(right.version).toBe(4);
+    expect((await send(right.inverse, 4)).version).toBe(5);
+    expect(await clips()).toEqual(before);
+  });
+});
+
 describe("the media check, with facts and no database", () => {
   const fact = (id: string, over: Partial<AssetFact> = {}): AssetFact => ({ id, kind: "video", ready: true, removed: false, durationMs: 12_500, ...over });
   const FACTS = new Map([fact("A"), fact("B"), fact("C"), fact("D"), fact("I", { kind: "image", durationMs: null }), fact("S", { kind: "audio", durationMs: 95_000 })].map((f) => [f.id, f]));
@@ -374,6 +431,29 @@ describe("the media check, with facts and no database", () => {
     ])).toMatchObject({ ids: [], problem: null });
     // A clip that was trimmed or re-timed and is gone after the batch names nothing either.
     expect(run([{ op: "trim_clip", clipId: "c4", edge: "end", to: 250 }, { op: "update_clip", clipId: "c4", patch: { speed: 2 } }, { op: "remove_clip", clipId: "c4" }])).toMatchObject({ ids: [], problem: null });
+  });
+
+  it("4. names the asset of a piece split off a clip the batch changed, as the piece is after the batch", () => {
+    const changed = [{ op: "trim_clip", clipId: "c4", edge: "end", to: 250 }, { op: "split_clip", clipId: "c4", at: 210, newClipId: "c5" }, { op: "remove_clip", clipId: "c4" }];
+    expect(run(changed)).toMatchObject({ ids: ["D"], problem: null });
+    expect(run([...changed, { op: "update_clip", clipId: "c5", patch: { assetId: "A" } }])).toMatchObject({ ids: ["A"], problem: null });
+    // Split first and changed after: the piece is as it was.
+    expect(run([{ op: "split_clip", clipId: "c4", at: 210, newClipId: "c5" }, { op: "trim_clip", clipId: "c4", edge: "end", to: 205 }, { op: "remove_clip", clipId: "c4" }])).toMatchObject({ ids: [], problem: null });
+  });
+
+  it("2. checks the length of a piece split off a clip the batch changed, and blames the split", () => {
+    // c4 uses 450 frames at speed 5. Split at 210, it keeps 50 of them and c5 the other 400, from `in` 50.
+    const sped = [{ op: "update_clip", clipId: "c4", patch: { speed: 5 } }, { op: "split_clip", clipId: "c4", at: 210, newClipId: "c5" }];
+    expect(run([...sped, { op: "remove_clip", clipId: "c4" }]).problem).toEqual({ code: "past_end", assetId: "D", opIndex: 1, clipId: "c5", frames: 375 });
+    expect(run([...sped, { op: "trim_clip", clipId: "c5", edge: "end", to: 280 }]).problem).toEqual({ code: "past_end", assetId: "D", opIndex: 2, clipId: "c5", frames: 375 }); // 50 + 350
+    expect(run([...sped, { op: "trim_clip", clipId: "c5", edge: "end", to: 274 }]).problem).toBeNull(); // 50 + 320
+  });
+
+  it("1. checks the kind against a piece split off the clip when the batch removes the clip", () => {
+    expect(run([{ op: "update_clip", clipId: "c4", patch: { assetId: "S" } }, { op: "split_clip", clipId: "c4", at: 210, newClipId: "c5" }, { op: "remove_clip", clipId: "c4" }]).problem)
+      .toEqual({ code: "wrong_kind", assetId: "S", opIndex: 0, clipId: "c4", assetKind: "audio", clipType: "video" });
+    // A piece split off before the change does not carry the asset.
+    expect(run([{ op: "split_clip", clipId: "c4", at: 210, newClipId: "c5" }, { op: "update_clip", clipId: "c4", patch: { assetId: "I" } }, { op: "remove_clip", clipId: "c4" }]).problem).toBeNull();
   });
 
   it("3. a clip that is already too long can be split, moved, restyled and deleted", () => {

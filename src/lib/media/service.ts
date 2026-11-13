@@ -347,17 +347,29 @@ async function trashQuietly(deps: MediaDeps, fileIds: (string | null)[]): Promis
   if (others.length > 0) throw others[0];
 }
 
+// Cancels an upload session whose row is gone, so no more of its file can be sent. As in trashQuietly, a Drive
+// failure is reported and not shown, and any other failure is thrown.
+async function cancelQuietly(deps: MediaDeps, sessionUrl: string | null): Promise<void> {
+  if (sessionUrl === null) return;
+  try {
+    await deps.drive.cancelSession(sessionUrl);
+  } catch (error) {
+    if (!(error instanceof DriveError)) throw error;
+    deps.onDriveError?.(error);
+  }
+}
+
 export async function removeAsset(deps: MediaDeps, actor: Actor, assetId: string): Promise<void> {
   requireRole(actor, "editor");
   const { db } = deps;
 
-  // An unfinished upload is canceled by its uploader or an admin. Its row goes; nothing is in Drive yet.
+  // An unfinished upload is canceled by its uploader or an admin. Its row goes, then its Drive session.
   const mayCancel = meetsRole(actor.role, "admin") ? unfinished : unfinishedOf(actor);
   const canceled = await db
     .delete(assets)
     .where(and(eq(assets.id, assetId), mayCancel))
-    .returning({ id: assets.id });
-  if (canceled.length > 0) return;
+    .returning({ uploadUrl: assets.uploadUrl });
+  if (canceled.length > 0) return cancelQuietly(deps, canceled[0].uploadUrl);
 
   // One statement looks for a project that uses the asset and marks it, so none can take it up in between.
   const marked = rowsOf<Record<string, string | null>>(
@@ -459,7 +471,10 @@ export async function completeAssetFile(deps: MediaDeps, actor: Actor, assetId: 
   const file = ASSET_FILES[role];
   const row = await libraryAsset(db, actor, assetId);
   const fileId = row[file.pendingColumn];
-  if (fileId === null) throw notFinished(); // none was opened
+  if (fileId === null) {
+    if (row[file.column] !== null) return viewOf(db, row); // a repeat once the file is in is not an error
+    throw notFinished(); // none was opened
+  }
 
   const inDrive = await drive.getFile(fileId);
   const whole = inDrive !== null && !inDrive.trashed && inDrive.sizeBytes > 0;

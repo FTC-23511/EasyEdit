@@ -3,9 +3,10 @@ import { meetsRole } from "@/lib/access-rules";
 import { mediaClipFor } from "@/lib/editor/media-clips";
 import { homeKind, placeClips } from "@/lib/editor/placement";
 import { assetTrouble } from "@/lib/media/refs";
+import { sourceFrames } from "@/lib/media/rules";
 import { loadAssetFacts, type AssetFact } from "@/lib/media/service";
 import { getProject } from "@/lib/projects/service";
-import type { MediaClip, TimelineDoc } from "@/lib/timeline";
+import { TRACK_ACCEPTS, type MediaClip, type TimelineDoc } from "@/lib/timeline";
 import { editedText, priorEdit, runEdit, type EditDone } from "../edit";
 import { assetReason, conflictResult, mediaItemOutside, NO_ROOM_FOR_MEDIA, notFoundText, roleMessage, tooManyMediaItems } from "../errors";
 import { fail, ok, type ToolContext, type ToolResult } from "../types";
@@ -42,29 +43,39 @@ export async function addMediaTool(
 
   const { doc } = project;
   const clips: Omit<MediaClip, "id">[] = [];
+  const trackIds: (string | null)[] = [];
   for (const [i, item] of input.items.entries()) {
     const fact = facts.get(item.asset_id)!;
+    const trackId = usableTrackId(doc, fact, item.track_id);
     const previous = clips.at(-1);
     const start =
       item.start_seconds !== undefined
         ? Math.round(item.start_seconds * doc.fps)
         : previous
           ? previous.start + previous.duration
-          : trackEnd(doc, fact, item.track_id);
+          : trackEnd(doc, fact, trackId);
     const clip = mediaClipFor(fact, start, doc.fps, { inSeconds: item.in_seconds, durationSeconds: item.duration_seconds });
-    if (!clip) return fail(`${mediaItemOutside(i, (fact.durationMs ?? 0) / 1000)}\n${NOTHING_APPLIED}`);
+    // The length the clip is cut from: whole frames of the project.
+    if (!clip) return fail(`${mediaItemOutside(i, sourceFrames(fact.durationMs ?? 0, doc.fps) / doc.fps)}\n${NOTHING_APPLIED}`);
     clips.push(clip);
+    trackIds.push(trackId ?? null);
   }
 
   // The id is a stand-in: placement gives each clip its real one.
   const placement = placeClips(
     doc,
-    clips.map((clip, i) => ({ clip: { ...clip, id: "new" }, trackId: input.items[i].track_id ?? null })),
+    clips.map((clip, i) => ({ clip: { ...clip, id: "new" }, trackId: trackIds[i] })),
     () => nanoid(10),
   );
   if (!placement.ok) return fail(NO_ROOM_FOR_MEDIA);
 
   return answer(ctx, input.items.length, await runEdit(ctx, { ...edit, ops: placement.ops }));
+}
+
+// The track an item names, when there is one and it takes the asset's kind. Any other track_id counts as not given.
+function usableTrackId(doc: TimelineDoc, fact: AssetFact, trackId: string | undefined): string | undefined {
+  const track = doc.tracks.find((t) => t.id === trackId);
+  return track && TRACK_ACCEPTS[track.kind].includes(fact.kind) ? track.id : undefined;
 }
 
 // Where a first item without a start goes: after the last clip of the track it names, else of the first track of
