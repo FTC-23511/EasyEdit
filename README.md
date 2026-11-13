@@ -10,18 +10,20 @@ This README gets the app running on your own computer. You will set up three thi
 - An Admin page where admins add people, change their role, and remove them.
 - A dashboard where editors create projects in any of five video formats, and rename, duplicate and delete them. A deleted project is hidden and not shown again.
 - The editor, which opens a project in the whole window: an add panel on the left, the preview in the middle, the details on the right and the timeline along the bottom. It is always dark, and it asks the Dark Reader browser extension to leave it alone. In it you can:
-  - add text clips from three presets (Title, Subtitle, Lower third), and move, trim, split, delete, ripple-delete, copy and paste clips
+  - add text clips from three presets (Title, Subtitle, Lower third) and video, image and audio clips from the Media tab, and move, trim, split, delete, ripple-delete, copy and paste clips of every kind
   - add, rename, lock, hide, mute, reorder and remove tracks
   - play the project in the preview, with frame steps, J, K and L, and safe-zone guides for each format
   - undo and redo your own changes, and undo any change listed under Activity, including a teammate's
+- Upload video, images and audio in the editor's Media tab (up to 2 GB a file). Uploads go straight from your browser to the team's Google Shared Drive and resume after an interruption.
+- Put media on the timeline, trim it, and play it in the preview. Each video gets a small 720p preview copy, so phone footage plays on any laptop.
 - Every change is saved as you make it. Other people's changes show up within about two seconds while you are working, and the top bar says who is editing.
 - Viewers get the same editor, read-only: they can play and look, but not change anything.
 - A project API (see [The project API](#the-project-api)).
-- Claude can list, read, create and edit projects for a signed-in member, through a connector added in claude.ai.
+- Claude can list, read, create and edit projects for a signed-in member, through a connector added in claude.ai. It can also list the team's media and put it on a timeline.
 
 The editor needs a window at least 1024 px wide. Changes made while offline or signed out wait in the open tab and are sent once you are back. They are not kept if the tab is closed or reloaded first, and the browser asks before that happens. The browser's Back button does not ask, so use **Projects** to leave while changes are waiting.
 
-What's next: uploading video, images and audio (media clips show only as placeholders for now), thumbnails and waveforms on the timeline, captions, text animation and effects, a brand kit and templates, exports and the render station, voiceover, and posting.
+What's next: thumbnails and waveforms on the timeline, transcripts and footage search for Claude, captions, text animation and effects, a brand kit and templates, exports and the render station, media in exports, voiceover, and posting.
 
 ## Before you start
 
@@ -100,7 +102,43 @@ pnpm install
     | `GOOGLE_CLIENT_ID` | The Client ID from step 1 |
     | `GOOGLE_CLIENT_SECRET` | The Client secret from step 1 |
 
+    The two media settings at the end of the file, `GOOGLE_SERVICE_ACCOUNT_KEY` and `DRIVE_FOLDER_ID`, can stay empty for now. See [Set up media storage](#set-up-media-storage).
+
 Never share `.env.local` or commit it to git. It holds secrets.
+
+## Set up media storage
+
+Uploaded video, images and audio are kept in a folder of a Google shared drive. This is optional: without it the app runs and edits as usual, and the Media tab says uploads are not set up. You can skip this section now and come back after step 4.
+
+1. **A folder in a shared drive.** In Google Drive, in a team shared drive where you may share folders: New folder, name it `EasyEdit`. Open the folder and copy the id from the address bar (the part after `/folders/`). This is `DRIVE_FOLDER_ID`.
+2. **Let an outside account in (only if step 6 is refused).** The service account's address ends in `gserviceaccount.com`, so it is outside the domain, and it will not be a member of the shared drive. A manager of the shared drive opens the drive's name, Shared drive settings, and turns on "Allow people outside Seattle Solvers to access files" and "Allow people who aren't shared drive members to access files". If the switch is missing or greyed out, a Workspace admin must allow it first: admin.google.com, Apps, Google Workspace, Drive and Docs, Sharing settings, "Sharing outside of Seattle Solvers" on for the unit that owns the drive.
+3. **The Drive API.** In Google Cloud project `easyedit-514403` (the one that holds the sign-in client): APIs & Services, Library, "Google Drive API", Enable.
+4. **A service account.** IAM & Admin, Service Accounts, Create service account, name `easyedit-media`. Give it no project role. Skip the optional steps.
+5. **Its key.** Open the service account, Keys, Add key, Create new key, JSON. Move the downloaded file to `~/.config/easyedit/drive-service-account.json` and run `chmod 600` on it. If Google refuses with a policy named `iam.disableServiceAccountKeyCreation`, an organization admin must switch that policy off for this project first.
+6. **Share the folder with it.** On the `EasyEdit` folder: Share, add the service account's address (`easyedit-media@easyedit-514403.iam.gserviceaccount.com`), role **Content manager**, untick "Notify people". Do not add it as a member of the drive.
+7. **Put the two settings in `.env.local`.** Encode the key on one line:
+
+    ```bash
+    base64 -i ~/.config/easyedit/drive-service-account.json | tr -d '\n'
+    ```
+
+    Put what it prints after `GOOGLE_SERVICE_ACCOUNT_KEY=`, and the folder id from item 1 after `DRIVE_FOLDER_ID=`. The key is a secret, like the rest of `.env.local`: never paste it into a chat, an issue or a commit.
+8. **Restart the app.** Stop `pnpm dev` and start it again, so it reads the new settings.
+
+**Check it.** From the project folder, run the Drive check with the key file and the folder id:
+
+```bash
+GOOGLE_SERVICE_ACCOUNT_KEY_FILE=~/.config/easyedit/drive-service-account.json DRIVE_FOLDER_ID=<the folder id> node scripts/drive-check/run.mjs
+```
+
+Open `http://localhost:3101` in the browser the team really uses (Edge), press **Run check**, and keep the tab in front until the page says it is done (64 MiB up, so one to a few minutes). The terminal prints F1 to F12 and exits 0. In Google Drive, the shared drive's trash holds the `drive-check` folder. If a line fails, see [If something goes wrong](#if-something-goes-wrong).
+
+Good to know:
+
+- The app keeps files in two folders it makes inside the `EasyEdit` folder: `Originals` for what was uploaded, and `Previews` for the preview copies and still pictures.
+- Removing a file in the app moves it to the shared drive's trash, where it stays for 30 days.
+- Do not rename or move the files in the drive by hand. Rename and remove them in the app instead.
+- Uploads work only from the address in `BETTER_AUTH_URL`. A preview deployment or another address cannot upload.
 
 ## 4. Run it
 
@@ -191,6 +229,8 @@ The app is meant to run on Vercel for free, on the Hobby tier. Nobody has run th
     | `GOOGLE_CLIENT_ID` | The Client ID from step 1 |
     | `GOOGLE_CLIENT_SECRET` | The Client secret from step 1 |
 
+    For uploads, also add `GOOGLE_SERVICE_ACCOUNT_KEY` and `DRIVE_FOLDER_ID`, with the same values as in `.env.local` (see [Set up media storage](#set-up-media-storage)). Add these two for **Production** only, and mark them **Sensitive**.
+
     Then click **Deploy**. If you don't know the web address until the first deploy finishes, set `BETTER_AUTH_URL` afterwards and redeploy.
 3. In Google Cloud, open your OAuth client (step 1, item 10) and add the deployed redirect URI, for example `https://your-app.vercel.app/api/auth/callback/google`. Click **Save**.
 4. Once, from the project folder on your computer, create the tables and the first admin in the production database. Put the production connection string in front of each command. It takes precedence over the one in `.env.local`:
@@ -201,6 +241,8 @@ The app is meant to run on Vercel for free, on the Hobby tier. Nobody has run th
     ```
 
     `.env.local` must still exist, because `pnpm db:seed` reads it.
+
+    **Before deploying a version with media:** run the migration against the production database first, with the command above, then deploy. The version that is live now ignores the new table.
 5. Optional: publish the Google app, so teammates no longer have to be test users. In Google Cloud, open **Branding** and fill in the app domain details (home page, privacy policy link, authorized domain) with your deployed web address. You will need a public privacy policy page to link to. Then open **Audience** and click **Publish app**. This app only asks Google for name, email and profile picture, and the allowlist still decides who gets in.
 
 ## Connect Claude
@@ -226,9 +268,11 @@ A member can connect Claude to the app and ask it to read and change projects fo
 | `edit_timeline` | Applies a list of changes to a project, all or nothing. |
 | `add_text` | Adds one or more text clips from a preset (title, subtitle or lower third). |
 | `undo_change` | Undoes one earlier change, Claude's or a person's, like **Undo this change** in the editor. |
+| `list_assets` | Lists the team's uploaded video, images and audio, newest first, with each one's id, kind, length and size. |
+| `add_media` | Puts one or more uploaded files on a project's timeline, laid end to end unless Claude gives start times. |
 | `get_editing_guide` | Reads the guide to how projects are built and what is possible today. |
 
-Claude cannot add video, images or audio yet.
+Claude cannot see inside footage yet.
 
 **Roles:** a viewer's Claude can read projects but not change them. An editor's Claude can create and change them. Every change Claude makes is listed in the editor's **Activity** as "Claude (for <name>)" and can be undone there. A change from Claude is refused if the project changed since Claude last read it, and Claude is told what changed, so it never overwrites an edit it has not seen.
 
@@ -244,8 +288,8 @@ Every person on the allowlist has one of three roles.
 
 | Role | What they can do today |
 | --- | --- |
-| Viewer | Sign in, see the dashboard, open projects. Cannot create or change anything. |
-| Editor | Everything a viewer can, plus create, rename, duplicate and delete projects, and change them. Deleting hides a project; it is not shown again. |
+| Viewer | Sign in, see the dashboard, open projects, see the media library and play media. Cannot create or change anything. |
+| Editor | Everything a viewer can, plus create, rename, duplicate and delete projects, and change them. Upload media, and rename and remove it. Deleting hides a project; it is not shown again. |
 | Admin | Everything an editor can, plus open the Admin page to add, re-role and remove people. |
 
 Some rules:
@@ -255,6 +299,7 @@ Some rules:
 - There must always be at least one admin. The last admin cannot be demoted or removed.
 - Removing someone signs them out right away. They are sent to `/login` on their next request.
 - Removing someone also ends their Claude connection right away.
+- A file that a project uses cannot be removed from the library. Take it out of that project first.
 - You stay signed in for 30 days after your last visit. Each visit starts the 30 days again.
 
 ## Project formats
@@ -268,6 +313,15 @@ Some rules:
 | Long 4K | 3840 x 2160 |
 
 All projects run at 30 frames per second. Times in the timeline are whole frames.
+
+## Media limits
+
+- File types: video in MP4, M4V, MOV or WebM; images in JPEG, PNG or WebP; audio in MP3, M4A, WAV or AAC. HEIC photos are not taken: save them as JPEG first.
+- Up to 2 GB a file. Two uploads run at a time; the rest wait their turn. Each member can have up to 20 unfinished uploads.
+- An upload stops if you leave the editor. It goes on from where it stopped when you choose the same file again within 7 days.
+- A video's preview copy is made in the uploader's browser. If you leave the editor or press Cancel while the preview is still being made, the video ends up with no preview: at once after Cancel, after up to two hours if you left the editor or closed the tab. Choosing the file again then uploads a second copy, so remove the first one.
+- The preview plays the 720p copy. Playing backward is silent, and a volume above 100% sounds like 100% in the preview.
+- The browser keeps about 2 GB of playback files, so footage you played before does not download again.
 
 ## The project API
 
@@ -338,3 +392,17 @@ When a route refuses a request, the answer has this shape:
 - **Claude is connected, but every tool call fails and claude.ai asks to reconnect in a loop.** Claude did not send the `resource` value, so its token is not bound to `<BETTER_AUTH_URL>/api/mcp`. The endpoint has to be changed to check such tokens another way; report it.
 - **"Too many requests" while signing in or connecting.** The rate limit. Wait a minute.
 - **The website's own sign-in answers with an error after a deploy.** The migration is not on the live database. Run `pnpm db:migrate` against it (see [Connect Claude](#connect-claude)), or use Vercel's **Promote** on the previous deployment to go back.
+- **The Media tab says uploads are not set up.** `GOOGLE_SERVICE_ACCOUNT_KEY` or `DRIVE_FOLDER_ID` is missing where the app runs: in `.env.local` on your computer, or in Vercel's Environment Variables on the deployed app. See [Set up media storage](#set-up-media-storage), then restart or redeploy.
+- **Uploads fail at once on the deployed app but work locally.** `BETTER_AUTH_URL` is not the address in the browser. Set it to the exact address people open, with no slash at the end, and redeploy.
+- **A video shows "No preview".** Either the uploader's browser could not read it: upload it again from Chrome or Edge on a Mac, or convert it to H.264 first. Or the uploader left the editor or canceled while the preview was being made: remove it and upload it again.
+
+**The Drive check** (`node scripts/drive-check/run.mjs`, in [Set up media storage](#set-up-media-storage)):
+
+| What the script prints | Likely cause | What to do |
+| --- | --- | --- |
+| F1 fails with `invalid_grant` | The key file is not this service account's, or the computer's clock is wrong | Make a new key ([Set up media storage](#set-up-media-storage), item 5); check the clock |
+| F1 passes, F2 fails with `404` | The `EasyEdit` folder is not shared with the service account, or the id is not that folder's | Item 6; copy the id again from the folder's address |
+| F2 fails with `403` and a reason about the Drive API | The Drive API is not enabled in the project that owns the service account | Item 3 |
+| Sharing the folder in item 6 is refused | Outside members are not allowed | Item 2, with a Workspace admin |
+| F4 fails; the console names `Access-Control-Allow-Origin` | Google Drive no longer lets a page send upload pieces to a session the server opened, so uploads from the browser cannot work | Report it; do not retry with other headers |
+| F12 fails with `403` | The role is Contributor, not Content manager | Change the role in the folder's Share dialog |
