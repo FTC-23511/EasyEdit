@@ -341,7 +341,9 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
           if (op.in !== undefined) {
             sourceIn = op.in;
           } else if (target.type === "video" || target.type === "audio") {
-            sourceIn = target.in + Math.floor(delta * target.speed);
+            // Counted back from where the clip ends in its source, so that end does not move.
+            const sourceEnd = target.in + Math.round(target.duration * target.speed);
+            sourceIn = sourceEnd - Math.round(duration * target.speed);
             if (sourceIn < 0) throw outOfRange("cannot start before the start of its source");
           }
         } else {
@@ -405,7 +407,11 @@ export function applyOps(input: TimelineDoc, ops: Op[]): { doc: TimelineDoc; inv
         right.id = op.newClipId;
         right.start = op.at;
         right.duration = end - op.at;
-        if (right.type !== "text" && left.type !== "text") {
+        if ((right.type === "video" || right.type === "audio") && left.type !== "text") {
+          // Counted back from where the clip ends in its source, so the right piece ends there too.
+          const sourceEnd = left.in + Math.round(left.duration * left.speed);
+          right.in = sourceEnd - Math.round(right.duration * left.speed);
+        } else if (right.type !== "text" && left.type !== "text") {
           right.in = left.in + Math.floor((op.at - left.start) * left.speed);
         }
         left.duration = op.at - left.start;

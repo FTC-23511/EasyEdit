@@ -116,7 +116,7 @@ describe("inverse shapes", () => {
 
   it("trim_clip restores the old edge, and for a start trim the exact source in", () => {
     expect(inv({ op: "trim_clip", clipId: "c1", edge: "start", to: 5 })).toEqual([
-      { op: "trim_clip", clipId: "c1", edge: "start", to: 0, in: 10, expect: { start: 5, in: 17 } }, // 5 frames at speed 1.5 are 7.5 of the source: rounded down
+      { op: "trim_clip", clipId: "c1", edge: "start", to: 0, in: 10, expect: { start: 5, in: 17 } }, // the clip ends at 10 + 45 = 55 in its source, and 25 × 1.5 = 37.5 rounds to 38
     ]);
     expect(inv({ op: "trim_clip", clipId: "c3", edge: "end", to: 70 })).toEqual([
       { op: "trim_clip", clipId: "c3", edge: "end", to: 90, expect: { start: 60, duration: 10 } },
