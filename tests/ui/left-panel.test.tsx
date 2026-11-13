@@ -33,9 +33,9 @@ it("disables the preset buttons for a viewer", () => {
   expect(store.getState().queue).toEqual([]);
 });
 
-it("shows one line in the Media tab", () => {
+it("shows the Media tab as loading when there is no provider", () => {
   setup();
   fireEvent.click(screen.getByRole("tab", { name: "Media" }));
-  expect(screen.getByText("Video, images and audio will be added here in a later update.")).toBeTruthy();
+  expect(screen.getByText("Loading media")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Add title" })).toBeNull();
 });

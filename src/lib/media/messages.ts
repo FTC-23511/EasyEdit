@@ -46,4 +46,24 @@ export const MEDIA_MESSAGES = {
   lostAccess: "You no longer have edit access.",
   noPreviewHere: "No preview: this browser can't read this video. It can still be used in projects.",
   noPreview: "The preview couldn't be made. The file can still be used in projects.",
+  // What the Media tab says in place of the list, or beside it.
+  loading: "Loading media",
+  emptyEditor: "No media yet. Upload video, images or audio to use them in projects.",
+  emptyViewer: "No media yet.",
+  noMatch: "Nothing matches.",
+  notSetUp: 'Uploads are not set up yet. See "Set up media storage" in the README.',
+  loadFailed: "Couldn't load the library.",
+  signedOutLibrary: "You're signed out. Sign in again to see media.",
+  // A change to an asset that was not made, when the server gave no sentence of its own.
+  noAnswer: "Couldn't reach EasyEdit. Check your connection, then try again.",
+  tryAgain: "That didn't go through. Try again.",
 };
+
+// How long a video or a sound runs, in whole seconds: 12_500 → "0:12", 3_723_000 → "1:02:03".
+export function formatLength(durationMs: number): string {
+  const seconds = Math.floor(durationMs / 1000);
+  const two = (n: number) => String(n).padStart(2, "0");
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return hours > 0 ? `${hours}:${two(minutes)}:${two(seconds % 60)}` : `${minutes}:${two(seconds % 60)}`;
+}
