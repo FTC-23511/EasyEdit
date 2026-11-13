@@ -597,6 +597,35 @@ describe("the files this browser keeps", () => {
     expect(await h.store.entries()).toEqual([{ fileId: "made", bytes: 14, usedAt: 1000 }]);
   });
 
+  it("hands out a file it made while the file is still being stored, and reads nothing from Drive for it", async () => {
+    const h = filesHarness({ made: 14 }); // Drive has it too: it was just sent there
+    const slow = slowWrite(h.store, "made");
+    const files = createMediaFiles({ tokens: h.tokens, store: slow.store, fetch: h.fetch, now: h.now });
+    const made = new Blob(["a preview copy"]);
+    const putting = files.put("made", made);
+    const early = await files.get("made"); // before room was made for it
+    await slow.writing;
+    const late = await files.get("made"); // while the store writes it
+    expect(early.ok && early.blob).toBe(made);
+    expect(late.ok && late.blob).toBe(made);
+    expect(h.reads).toEqual([]);
+    expect(h.tokenRequests()).toBe(0);
+    slow.finish();
+    await putting;
+    const stored = await files.get("made"); // once it is stored, it is the store's copy
+    expect(stored.ok && stored.blob).toBe(await h.store.read("made"));
+    expect(h.reads).toEqual([]);
+  });
+
+  it("does not hold on to a file it made once the store has refused it", async () => {
+    const h = filesHarness({ huge: 40 * MB });
+    const files = createMediaFiles({ tokens: h.tokens, store: h.store, fetch: h.fetch, now: h.now, capBytes: 30 * MB });
+    await files.put("huge", zeros(40 * MB)); // larger than the cap
+    const got = await files.get("huge");
+    expect(got.ok && got.blob.size).toBe(40 * MB);
+    expect(h.reads).toEqual(["huge"]); // as for any file the store does not have
+  });
+
   it("makes room, least recently used first", async () => {
     for (const [older, newer] of [["a", "b"], ["b", "a"]]) {
       const h = filesHarness({ c: 20 * MB });

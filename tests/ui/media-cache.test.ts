@@ -226,6 +226,18 @@ describe("createOpfsStore", () => {
     expect(await store!.entries()).toEqual([{ fileId: "whole", bytes: 1, usedAt: clock - 3 * day }]);
   });
 
+  // Chromium lists a file it is writing as `<name>.crswap`, holding the bytes written so far, until the write is closed.
+  it("a browser's swap file for an unfinished file is unfinished too: never listed, and cleared when it is old", async () => {
+    const day = STALE_MS;
+    const folder = await root.getDirectoryHandle("media-cache", { create: true });
+    folder.put("old.abc.part.crswap", "x", clock - day - 1); // left by a page that went away
+    folder.put("new.def.part.crswap", "xyz", clock - 60_000); // another tab is writing it
+    folder.put("whole", "x", clock - 3 * day);
+    const store = (await createOpfsStore())!;
+    expect(names(folder)).toEqual(["new.def.part.crswap", "whole"]);
+    expect(await store.entries()).toEqual([{ fileId: "whole", bytes: 1, usedAt: clock - 3 * day }]);
+  });
+
   it("opens without a worker folder", async () => {
     const store = await createOpfsStore();
     expect(store).not.toBeNull();

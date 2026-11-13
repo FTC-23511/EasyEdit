@@ -17,7 +17,7 @@ import {
   type StreamTargetChunk,
 } from "mediabunny";
 import type { Derived, IngestEvent, IngestRequest, PreviewProblem } from "@/lib/media/ingest-protocol";
-import { POSTER, PREVIEW, posterSize, posterTime, previewFps, previewSize } from "@/lib/media/preview-spec";
+import { POSTER, PREVIEW, posterSize, posterTime, previewFps, previewSize, previewVideoBitrate } from "@/lib/media/preview-spec";
 import { kindFromName } from "@/lib/media/rules";
 import type { AssetProbe } from "@/lib/media/types";
 
@@ -179,7 +179,7 @@ function problemFor(reason: DiscardedTrack["reason"]): PreviewProblem {
 
 // The 720p H.264 and AAC copy of a video. Throws a ConversionCanceledError when the request was canceled;
 // every other failure is an answer with no copy and the reason.
-async function previewCopy(id: string, input: Input, width: number, height: number, fps: number | null, job: Job): Promise<Pick<Derived, "preview" | "previewProblem">> {
+async function previewCopy(id: string, input: Input, width: number, height: number, fps: number | null, durationMs: number, job: Job): Promise<Pick<Derived, "preview" | "previewProblem">> {
   if (job.canceled) throw new ConversionCanceledError();
   const temp = await openTempFile(id);
   try {
@@ -191,7 +191,7 @@ async function previewCopy(id: string, input: Input, width: number, height: numb
         fit: "contain",
         frameRate: previewFps(fps),
         codec: "avc",
-        quality: new Quality({ bitrate: PREVIEW.videoBitrate }),
+        quality: new Quality({ bitrate: previewVideoBitrate(durationMs) }),
         keyFrameInterval: PREVIEW.keyFrameSeconds,
         allowTransformationMetadata: false, // the rotation is drawn into the frames, so the copy plays upright anywhere
       },
@@ -246,7 +246,7 @@ async function derive({ id, file, probe: facts }: DeriveRequest, job: Job): Prom
     const track = await input.getPrimaryVideoTrack();
     if (!track || width === null || height === null || durationMs === null) return { preview: null, poster: null, previewProblem: "failed" };
     const poster = await videoPoster(track, width, height, durationMs);
-    return { poster, ...(await previewCopy(id, input, width, height, facts.fps, job)) };
+    return { poster, ...(await previewCopy(id, input, width, height, facts.fps, durationMs, job)) };
   } finally {
     input.dispose();
   }

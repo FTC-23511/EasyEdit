@@ -44,23 +44,42 @@ export function createLibraryStore(deps: { api: MediaApi; now?: () => number }):
   // Ids of assets that came from `ensure`, `put` or a removal and that no fetch has listed since. A fetch keeps
   // them: the list has only what is ready and not removed, and a clip may name an asset that is neither.
   const learned = new Set<string>();
+  let changes = 0; // how many changes this editor has taken
+  const changedAt = new Map<string, number>(); // the count at each asset's last change
 
   return createStore<LibraryState>()((set, get) => {
     function take(assets: AssetView[], learn: boolean) {
       if (assets.length === 0) return;
-      if (learn) for (const asset of assets) learned.add(asset.id);
+      changes += 1;
+      for (const asset of assets) {
+        changedAt.set(asset.id, changes);
+        if (learn) learned.add(asset.id);
+      }
       set((state) => ({ assets: { ...state.assets, ...Object.fromEntries(assets.map((asset) => [asset.id, asset])) } }));
     }
 
     async function fetchLibrary() {
+      const began = changes;
       const answer = await api.list();
       if (!answer.ok) return set({ problem: answer.kind }); // what was there is kept
       asked.clear();
-      const before = get().assets;
-      const kept = [...learned].map((id) => [id, before[id]] as const);
-      for (const asset of answer.assets) learned.delete(asset.id); // from here on the list says whether it is still there
-      const listed = answer.assets.map((asset) => [asset.id, asset] as const);
-      set({ assets: Object.fromEntries([...kept, ...listed]), loaded: true, setUp: answer.setUp, problem: null });
+      // An asset that changed here while the list was on its way keeps that change: the server read its rows before.
+      const newer = (id: string) => (changedAt.get(id) ?? 0) > began;
+      const kept = Object.entries(get().assets).filter(([id]) => learned.has(id) || newer(id));
+      const listed = answer.assets.filter((asset) => !newer(asset.id));
+      for (const asset of listed) learned.delete(asset.id); // from here on the list says whether it is still there
+      set({ assets: Object.fromEntries([...kept, ...listed.map((asset) => [asset.id, asset] as const)]), loaded: true, setUp: answer.setUp, problem: null });
+      // A kept asset shown as ready may have been removed since this editor learned it. A removed one is never listed
+      // again, so it is asked for by id, and comes back removed.
+      const held = new Set(answer.assets.map((asset) => asset.id));
+      const unsure = [...learned].filter((id) => {
+        const stored = get().assets[id];
+        return !held.has(id) && stored?.status === "ready" && !stored.removed;
+      });
+      for (let from = 0; from < unsure.length; from += LIMITS.mediaIdsPerRequest) {
+        const again = await api.list(unsure.slice(from, from + LIMITS.mediaIdsPerRequest));
+        if (again.ok) take(again.assets, true);
+      }
     }
 
     async function update(id: string, patch: { name?: string; event?: string | null }) {

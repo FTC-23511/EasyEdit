@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { IMAGE_MAX_SIDE, POSTER, PREVIEW, posterSize, posterTime, previewFps, previewSize } from "@/lib/media/preview-spec";
+import { LIMITS } from "@/lib/limits";
+import { IMAGE_MAX_SIDE, POSTER, PREVIEW, posterSize, posterTime, previewFps, previewSize, previewVideoBitrate } from "@/lib/media/preview-spec";
 
 describe("the preview copy's size", () => {
   it("an upright 4K phone clip becomes 720 by 1280", () => {
@@ -54,6 +56,36 @@ describe("the preview copy's size", () => {
     expect(previewFps(Number.POSITIVE_INFINITY)).toBe(30);
     expect(previewFps(30)).toBe(30);
     expect(previewFps(12.5)).toBe(12.5);
+  });
+});
+
+describe("the preview copy's video bitrate", () => {
+  const MINUTE = 60_000;
+  const copyBytes = (durationMs: number) => ((previewVideoBitrate(durationMs) + PREVIEW.audioBitrate) * durationMs) / 1000 / 8;
+
+  it("is the plan's rate for a video of ordinary length", () => {
+    expect(previewVideoBitrate(MINUTE)).toBe(2_500_000);
+    expect(previewVideoBitrate(90 * MINUTE)).toBe(2_500_000);
+    expect(previewVideoBitrate(12_500)).toBe(2_500_000);
+  });
+
+  it("is lowered for a long video, so the copy stays under 90% of the largest file", () => {
+    // floor(2 GiB × 8 × 0.9 / 10,800 s) − 128,000
+    expect(previewVideoBitrate(180 * MINUTE)).toBe(1_303_655);
+    expect(previewVideoBitrate(120 * MINUTE)).toBe(2_019_483);
+    for (const minutes of [100, 120, 180, 240]) expect(copyBytes(minutes * MINUTE), `${minutes} min`).toBeLessThanOrEqual(LIMITS.mediaFileBytes * 0.9);
+  });
+
+  it("is never below 300,000", () => {
+    expect(previewVideoBitrate(24 * 60 * MINUTE)).toBe(300_000);
+    expect(previewVideoBitrate(10 * 24 * 60 * MINUTE)).toBe(300_000);
+  });
+
+  // The worker has no unit test (it needs a browser's encoder); this is what keeps it on the capped rate.
+  it("is the rate the worker asks the encoder for", () => {
+    const worker = readFileSync("src/workers/ingest.worker.ts", "utf8");
+    expect(worker).toMatch(/new Quality\(\{ bitrate: previewVideoBitrate\(durationMs\) \}\)/);
+    expect(worker).not.toMatch(/PREVIEW\.videoBitrate/);
   });
 });
 

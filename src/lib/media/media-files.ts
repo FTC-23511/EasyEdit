@@ -88,6 +88,7 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
   const handedOut = new Set<string>(); // stored files a caller holds: a blob from the store is only good while its file is there
   const arriving = new Map<string, number>(); // files being written, and their bytes: room is held for them, and the store may not list them yet
   const wanted = new Map<string, Promise<Got>>(); // the reads under way, shared by everyone who asks for the same file meanwhile
+  const making = new Map<string, Blob>(); // files this browser made that are on their way into the store: Drive need not be asked for them
   let storing = true; // false once the store has lost a file it was being given as it arrived: it is offered no more files
   let turn: Promise<unknown> = Promise.resolve();
 
@@ -190,6 +191,8 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
 
   return {
     get(fileId) {
+      const made = making.get(fileId);
+      if (made) return Promise.resolve({ ok: true, blob: made });
       const under = wanted.get(fileId);
       if (under) return under;
       const reading = load(fileId).finally(() => wanted.delete(fileId)); // a failure is not remembered either
@@ -198,10 +201,14 @@ export function createMediaFiles(deps: { tokens: ReadTokens; store: FileStore; f
     },
     // Kept when there is room. The caller has the bytes either way, so a store that cannot take them is no failure.
     async put(fileId, blob) {
+      if (!storing) return;
+      making.set(fileId, blob);
       try {
-        if (storing && (await makeRoom(fileId, blob.size))) await write(fileId, blob, false);
+        if (await makeRoom(fileId, blob.size)) await write(fileId, blob, false);
       } catch {
         // Not kept.
+      } finally {
+        making.delete(fileId);
       }
     },
   };

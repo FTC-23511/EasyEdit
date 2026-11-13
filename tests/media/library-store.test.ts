@@ -15,9 +15,10 @@ const asset = (id: string, over: Partial<AssetView> = {}): AssetView => ({
 const REFUSED: MediaFailure = { ok: false, kind: "refused", message: 'Used in 1 project: "Recap". Remove it from that project first.' };
 
 // A pretend server: `held` is every asset it has, removed ones too. Its list is what the real one sends: the
-// assets that are not removed. `failing` makes every call answer that failure.
+// assets that are not removed. `failing` makes every call answer that failure. `meanwhile` runs while a list is on
+// its way back: the server has read its rows, so the answer says what was true before it.
 function setup(held: AssetView[] = []) {
-  const server = { held, setUp: true, failing: null as MediaFailure | null, takes: 0 }; // takes: how long a list request is on its way, in ms
+  const server = { held, setUp: true, failing: null as MediaFailure | null, takes: 0, meanwhile: null as ((ids?: string[]) => Promise<void>) | null }; // takes: how long a list request is on its way, in ms
   const clock = { at: 1_762_900_000_000 };
   const calls: unknown[][] = [];
   const unused = async (): Promise<never> => {
@@ -29,7 +30,9 @@ function setup(held: AssetView[] = []) {
       clock.at += server.takes;
       if (server.failing) return server.failing;
       const assets = ids ? server.held.filter((one) => ids.includes(one.id)) : server.held.filter((one) => !one.removed);
-      return { ok: true, assets, setUp: server.setUp };
+      const answer = { ok: true as const, assets, setUp: server.setUp };
+      await server.meanwhile?.(ids);
+      return answer;
     },
     async update(assetId, patch) {
       calls.push(["update", assetId, patch]);
@@ -133,7 +136,7 @@ describe("the library store", () => {
   });
 
   it("the timer refreshes a library that was never fetched, when it holds a preview being made", async () => {
-    const { state, lists } = setup();
+    const { state, lists } = setup([asset("a1", { previewStatus: "pending" })]);
     await state().refresh("timer");
     expect(lists()).toHaveLength(0);
     state().put(asset("a1", { previewStatus: "pending" }));
@@ -262,6 +265,56 @@ describe("the library store", () => {
     await state().refresh("tab");
     expect(state().assets.a1).toMatchObject({ event: "Scrimmage", removed: true });
     expect(server.held[0].removed).toBe(true);
+  });
+
+  it("asks again for an asset it learned that the list does not hold, so one a teammate removed leaves the library", async () => {
+    const { state, server, calls } = setup([asset("a1")]);
+    await state().refresh("open");
+    state().put(asset("x1")); // this member's own upload, as the queue reports it
+    server.held = [asset("a1"), asset("x1", { removed: true })]; // a teammate removed it
+    await state().refresh("tab");
+    expect(ids(visibleAssets(state()))).toEqual(["a1"]);
+    expect(state().assets.x1).toEqual(asset("x1", { removed: true })); // kept, for a clip that still names it
+    expect(calls.slice(1)).toEqual([["list"], ["list", ["x1"]]]);
+    await state().refresh("tab"); // known to be removed: not asked for again
+    expect(calls.slice(3)).toEqual([["list"]]);
+  });
+
+  it("asks again for at most 200 learned assets in one request", async () => {
+    const { state, server, calls } = setup();
+    const many = Array.from({ length: 201 }, (_, index) => asset(`x${index}`));
+    for (const one of many) state().put(one);
+    server.held = many.map((one) => ({ ...one, removed: true }));
+    await state().refresh("open");
+    expect(calls).toEqual([["list"], ["list", ids(many.slice(0, LIMITS.mediaIdsPerRequest))], ["list", ids(many.slice(200))]]);
+    expect(visibleAssets(state())).toEqual([]);
+  });
+
+  it("a change made while the library is on its way is not undone by it", async () => {
+    const { state, server, lists } = setup([asset("a1"), asset("a2"), asset("up", { status: "uploading", previewStatus: "pending" })]);
+    await state().refresh("open");
+    server.meanwhile = async (asked) => {
+      if (asked) return;
+      server.meanwhile = null;
+      server.held = server.held.map((one) => (one.id === "up" ? { ...one, status: "ready" } : one));
+      state().put(asset("up", { previewStatus: "pending" })); // the upload completed
+      await state().remove("a1");
+      await state().rename("a2", "Climb, take 2");
+    };
+    await state().refresh("tab");
+    expect(state().assets.up).toMatchObject({ status: "ready" });
+    expect(state().assets.a1).toMatchObject({ removed: true });
+    expect(state().assets.a2).toMatchObject({ name: "Climb, take 2" });
+    expect(ids(visibleAssets(state()))).toEqual(["a2", "up"]);
+    expect(lists()).toEqual([["list"], ["list"]]); // the list held all three: none is asked for again
+
+    // Only a change made while that list was on its way: the next list says what is true again.
+    server.held = [asset("a1", { removed: true }), asset("a2", { name: "Renamed by a teammate" }), asset("up", { removed: true })];
+    await state().refresh("tab");
+    expect(state().assets.a2).toMatchObject({ name: "Renamed by a teammate" });
+    expect(state().assets.up).toMatchObject({ removed: true });
+    expect(state().assets.a1).toMatchObject({ removed: true }); // kept, for a clip that still names it
+    expect(ids(visibleAssets(state()))).toEqual(["a2"]);
   });
 
   it("keeps an asset that was put and that the list does not hold", async () => {

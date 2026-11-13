@@ -9,6 +9,9 @@ const INGEST_FOLDER = "ingest";
 // A file still being written is named `<file id>.<random>.part`, and takes the file id as its name only once it is
 // whole. A name without the suffix is therefore always a whole file.
 const PART = ".part";
+// Unfinished: a file being written, or the browser's own file beside it (Chromium lists `<name>.crswap` while a
+// write is open, holding the bytes written so far).
+const unfinished = (name: string) => /\.part(?:\.[^.]+)?$/.test(name);
 // An unfinished file this old was left by a page that went away; a newer one may belong to another open tab.
 export const STALE_MS = 24 * 60 * 60 * 1000;
 
@@ -74,7 +77,7 @@ export async function createOpfsStore(): Promise<FileStore | null> {
     const root = (await storage.getDirectory()) as unknown as Folder;
     folder = await root.getDirectoryHandle(FOLDER, { create: true });
     const before = Date.now() - STALE_MS;
-    await clearOld(folder, (name) => name.endsWith(PART), before);
+    await clearOld(folder, unfinished, before);
     const ingest = await root.getDirectoryHandle(INGEST_FOLDER).catch(() => null);
     if (ingest) await clearOld(ingest, () => true, before);
   } catch {
@@ -122,7 +125,7 @@ export async function createOpfsStore(): Promise<FileStore | null> {
       const listed: CacheEntry[] = [];
       try {
         for (const [name, handle] of await filesIn(folder)) {
-          if (name.endsWith(PART)) continue;
+          if (unfinished(name)) continue;
           try {
             const file = await handle.getFile();
             listed.push({ fileId: name, bytes: file.size, usedAt: usedAt.get(name) ?? file.lastModified });
