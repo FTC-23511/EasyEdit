@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { clipFieldOps, clipFieldValue, FIELD_LABEL, type ClipField } from "@/lib/editor/inspector-fields";
 import { findClip } from "@/lib/editor/store";
 import { applyOps, prepareOps, type OpInput } from "@/lib/timeline";
-import { sampleDoc, text } from "./fixtures";
+import { sampleDoc, text, video } from "./fixtures";
 
 const clip = (id: string) => findClip(sampleDoc(), id)!.clip;
 const patch = (p: Record<string, unknown>): OpInput[] => [{ op: "update_clip", clipId: "x1", patch: p }];
@@ -78,5 +78,26 @@ describe("inspector fields, fix round 1", () => {
     const shouty = text("t", 0, 30, { style: { fontFamily: "Geist", fontSize: 64, fontWeight: 700, color: "#FFAA00", align: "center" } });
     expect(clipFieldValue(shouty, "color", 30)).toBe("#ffaa00");
     expect(clipFieldOps(clip("x1"), "fontWeight", "550.4", 30)).toEqual(patch({ style: { fontWeight: 550 } }));
+  });
+});
+
+describe("a media clip's length", () => {
+  // 90 frames at 100, from frame 60 of a 375-frame video: it can end at 415 at the latest.
+  const media = video("m", 100, 90, { in: 60 });
+
+  it("a typed length stops at the end of the media", () => {
+    expect(clipFieldOps(media, "duration", "60", 30, 375)).toEqual([{ op: "trim_clip", clipId: "m", edge: "end", to: 415 }]);
+    expect(clipFieldOps(media, "duration", "60", 30)).toEqual([{ op: "trim_clip", clipId: "m", edge: "end", to: 1900 }]);
+    expect(clipFieldOps(video("m", 100, 315, { in: 60 }), "duration", "60", 30, 375)).toEqual([]);
+    // A length inside the media is taken as typed.
+    expect(clipFieldOps(media, "duration", "5", 30, 375)).toEqual([{ op: "trim_clip", clipId: "m", edge: "end", to: 250 }]);
+    // A clip that already starts past the end of its media keeps at least one frame, as a trim on the timeline does.
+    expect(clipFieldOps(video("m", 100, 90, { in: 400 }), "duration", "60", 30, 375)).toEqual([{ op: "trim_clip", clipId: "m", edge: "end", to: 101 }]);
+  });
+
+  it("is not held for text or an image", () => {
+    expect(clipFieldOps(text("t", 100, 90), "duration", "60", 30, 375)).toEqual([{ op: "trim_clip", clipId: "t", edge: "end", to: 1900 }]);
+    const image = video("i", 100, 90, { type: "image", in: 0 });
+    expect(clipFieldOps(image, "duration", "60", 30, 375)).toEqual([{ op: "trim_clip", clipId: "i", edge: "end", to: 1900 }]);
   });
 });

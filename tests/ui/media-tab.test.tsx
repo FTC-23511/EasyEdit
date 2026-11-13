@@ -508,13 +508,17 @@ describe("who may change what", () => {
     expect(marked(screen.getByLabelText("Search media"))).toBe(false);
   });
 
-  it("a row's click goes to onAdd, which the left panel does not give", async () => {
+  it("clicking a row adds the asset to the timeline", async () => {
     const { store } = setup();
     await openMedia();
-    const before = store.getState().doc;
-    fireEvent.click(row("field"));
-    expect(store.getState().doc).toBe(before);
-    expect(store.getState().queue).toEqual([]);
+    act(() => store.getState().seek(200));
+    const clipsBefore = store.getState().doc.tracks.flatMap((t) => t.clips.map((c) => c.id));
+    fireEvent.click(row("IMG_4821"));
+    const added = store.getState().doc.tracks.flatMap((t) => t.clips).filter((c) => !clipsBefore.includes(c.id));
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ type: "image", assetId: "i1", start: 200 });
+    expect(store.getState().selection.clipIds).toEqual([added[0].id]);
+    expect(store.getState().queue).toMatchObject([{ label: "add media" }]);
   });
 });
 

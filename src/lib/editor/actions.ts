@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
-import type { OpInput, TrackKind } from "@/lib/timeline";
+import type { AssetView } from "@/lib/media/types";
+import { TRACK_ACCEPTS, type OpInput, type TrackKind } from "@/lib/timeline";
 import { copyClips, pasteItems, type ClipboardStore } from "./clipboard";
 import {
   addTrackOps,
@@ -14,6 +15,7 @@ import {
   toggleTrackOps,
   type TrackSwitch,
 } from "./commands";
+import { mediaClipFor } from "./media-clips";
 import { MESSAGES } from "./messages";
 import { placeClips } from "./placement";
 import { findClip, type EditorStore } from "./store";
@@ -31,6 +33,28 @@ export function addText(store: EditorStore, preset: TextPreset): void {
     return;
   }
   const result = state.edit(placement.ops, "add text");
+  if (result.ok) state.select(placement.clipIds);
+}
+
+// Puts a clip of a library asset at the frame given, else the playhead, and selects it. The clip would like the track
+// given, else the selected track when that track takes it; placeClips finds where it goes.
+export function addMedia(store: EditorStore, asset: AssetView, at: { frame?: number; trackId?: string | null } = {}): void {
+  const state = store.getState();
+  if (!state.canEdit) return;
+  const clip = asset.status === "ready" && !asset.removed ? mediaClipFor(asset, at.frame ?? state.playhead, state.doc.fps) : null;
+  if (!clip) {
+    state.notify("info", MESSAGES.mediaNotReady);
+    return;
+  }
+  const selected = state.doc.tracks.find((t) => t.id === state.selection.trackId);
+  const trackId = at.trackId !== undefined ? at.trackId : selected && TRACK_ACCEPTS[selected.kind].includes(clip.type) ? selected.id : null;
+  // The id is a stand-in, as presetClip's is: placement gives the clip its real one.
+  const placement = placeClips(state.doc, [{ clip: { ...clip, id: "new" }, trackId }], () => nanoid(10));
+  if (!placement.ok) {
+    state.notify("error", MESSAGES.noRoom);
+    return;
+  }
+  const result = state.edit(placement.ops, "add media");
   if (result.ok) state.select(placement.clipIds);
 }
 

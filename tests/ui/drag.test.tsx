@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EditorProvider } from "@/components/editor/context";
+import { MediaProvider, type MediaServices } from "@/components/editor/media/media-context";
 import { cx } from "@/components/ui/cx";
 import { LANE_GUTTER } from "@/components/editor/timeline/playhead";
 import { Timeline } from "@/components/editor/timeline/timeline";
@@ -10,6 +11,7 @@ import { MESSAGES, explainOpError } from "@/lib/editor/messages";
 import { findClip, viewDoc, type EditorStore } from "@/lib/editor/store";
 import { act, fireEvent, render, screen } from "../helpers/dom";
 import { entry, makeStore, sampleDoc, text } from "../editor/fixtures";
+import { assetView, pretendMediaServices } from "../helpers/media-services";
 
 // Both stay the real functions; the spies only count calls. ClipView calls cx once per render with
 // its fill class, which nothing else on the timeline uses.
@@ -52,10 +54,16 @@ afterEach(() => {
 const rect = (left: number, top: number, width: number, height: number) =>
   ({ left, x: left, top, y: top, width, height, right: left + width, bottom: top + height, toJSON() {} }) as DOMRect;
 
-function setup(store = makeStore()) {
+function setup(store = makeStore(), media?: MediaServices) {
   const view = render(
     <EditorProvider store={store}>
-      <Timeline />
+      {media ? (
+        <MediaProvider services={media}>
+          <Timeline />
+        </MediaProvider>
+      ) : (
+        <Timeline />
+      )}
     </EditorProvider>,
   );
   act(() => store.getState().setZoom(ZOOM));
@@ -414,4 +422,34 @@ it("a focused clip leaves Space to play and pause, and Enter selects it", () => 
   expect(st().selection.clipIds).toEqual(["x1"]);
   expect(fireEvent.keyDown(clip("x2"), { key: "Enter" })).toBe(false);
   expect(st().selection.clipIds).toEqual(["x2"]);
+});
+
+it("an end trim on the timeline stops at the end of the media", () => {
+  // c2 is frames 30 to 60, from the start of asset "a". A 2 s asset is 60 frames at 30 fps, so c2 can end at 90.
+  const dragEnd = (media?: MediaServices) => {
+    const { st, clip, press, move, release, frame, view } = setup(makeStore(), media);
+    const handle = clip("c2").querySelector<HTMLElement>('[data-trim-handle="end"]')!;
+    press(handle, x(59), V1);
+    move(x(300), V1);
+    frame();
+    release(x(300), V1);
+    const ops = st().queue.flatMap((e) => e.ops);
+    view.unmount();
+    return ops;
+  };
+  expect(dragEnd(pretendMediaServices([assetView({ durationMs: 2_000 })]))).toEqual([{ op: "trim_clip", clipId: "c2", edge: "end", to: 90 }]);
+  expect(dragEnd()).toEqual([{ op: "trim_clip", clipId: "c2", edge: "end", to: 300 }]);
+});
+
+it("the library is read when a trim starts, not when the timeline is drawn", () => {
+  const media = pretendMediaServices([]);
+  const { st, clip, press, move, release, frame } = setup(makeStore(), media);
+  // The library learns the asset after the timeline is drawn: the next trim stops at its end.
+  act(() => media.library.getState().put(assetView({ durationMs: 2_000 })));
+  const handle = clip("c2").querySelector<HTMLElement>('[data-trim-handle="end"]')!;
+  press(handle, x(59), V1);
+  move(x(300), V1);
+  frame();
+  release(x(300), V1);
+  expect(st().queue.flatMap((e) => e.ops)).toEqual([{ op: "trim_clip", clipId: "c2", edge: "end", to: 90 }]);
 });

@@ -3,7 +3,7 @@
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, tabIds } from "@/components/ui/tabs";
-import { addText } from "@/lib/editor/actions";
+import { addMedia, addText } from "@/lib/editor/actions";
 import { TEXT_PRESETS } from "@/lib/editor/text-presets";
 import { useEditor, useEditorStore } from "./context";
 import { MediaTab, type PanelProps } from "./media/media-tab";
@@ -39,6 +39,7 @@ function TextTab({ panel }: { panel: PanelProps }) {
 }
 
 export function LeftPanel() {
+  const store = useEditorStore();
   const [tab, setTab] = useState("text");
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
   const idPrefix = useId();
@@ -51,7 +52,7 @@ export function LeftPanel() {
       <div className="flex h-11 shrink-0 items-center border-b border-ed-line px-3">
         <Tabs label="Add" value={current.id} tabs={TABS} onChange={setTab} idPrefix={idPrefix} />
       </div>
-      {current.id === "text" ? <TextTab panel={panel} /> : <MediaTab panel={panel} />}
+      {current.id === "text" ? <TextTab panel={panel} /> : <MediaTab panel={panel} onAdd={(asset) => addMedia(store, asset)} />}
     </div>
   );
 }

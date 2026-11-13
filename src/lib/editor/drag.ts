@@ -1,12 +1,14 @@
 import type { OpInput, TimelineDoc } from "@/lib/timeline";
 import { moveOps } from "./commands";
+import { trimBounds } from "./media-clips";
 import { clipEdges, snap } from "./snap";
 
 // Moving and trimming clips with the pointer. A drag records where its clips were when it began;
 // resolveDrag turns a pointer position into ops against the current document. Whether those ops
 // may be applied is left to applyOps, through the store's setGesture.
 
-export type DragOrigin = { clipId: string; start: number; duration: number; trackId: string };
+// minStart and maxEnd: how far a trim may take the clip's edges before its media runs out, when that is known.
+export type DragOrigin = { clipId: string; start: number; duration: number; trackId: string; minStart?: number; maxEnd?: number };
 
 export type Drag =
   | { type: "move"; grabFrame: number; primary: string; origins: DragOrigin[] }
@@ -39,10 +41,19 @@ export function beginMove(doc: TimelineDoc, clipId: string, selection: string[],
   return { type: "move", grabFrame, primary: clipId, origins };
 }
 
-export function beginTrim(doc: TimelineDoc, clipId: string, edge: "start" | "end", grabFrame: number): Drag | null {
+// lengthOf gives the length of an asset in this document's frames, when it is known.
+export function beginTrim(
+  doc: TimelineDoc,
+  clipId: string,
+  edge: "start" | "end",
+  grabFrame: number,
+  lengthOf?: (assetId: string) => number | undefined,
+): Drag | null {
   const origins = originsOf(doc, new Set([clipId]));
   if (origins.length === 0) return null;
-  return { type: "trim", edge, grabFrame, primary: clipId, origins };
+  const clip = doc.tracks.find((t) => t.id === origins[0].trackId)?.clips.find((c) => c.id === clipId);
+  const bounds = clip && clip.type !== "text" && lengthOf ? trimBounds(clip, lengthOf(clip.assetId)) : undefined;
+  return { type: "trim", edge, grabFrame, primary: clipId, origins: [bounds ? { ...origins[0], ...bounds } : origins[0]] };
 }
 
 function existingClipIds(doc: TimelineDoc): Set<string> {
@@ -85,8 +96,11 @@ export function resolveDrag(doc: TimelineDoc, drag: Drag, input: DragInput): Dra
   const from = drag.edge === "start" ? primary.start : end;
   const snapped = snapTo([from + delta]);
   const wanted = from + delta + (snapped?.delta ?? 0);
-  const to = drag.edge === "start" ? Math.min(Math.max(wanted, 0), end - 1) : Math.max(wanted, primary.start + 1);
-  // A snap target the edge cannot reach is not shown.
+  const to =
+    drag.edge === "start"
+      ? Math.min(Math.max(wanted, primary.minStart ?? 0), end - 1)
+      : Math.max(Math.min(wanted, primary.maxEnd ?? wanted), primary.start + 1);
+  // A snap target the edge cannot reach, at either end of the clip's media too, is not shown.
   const guide = snapped && to === wanted ? snapped.guide : null;
   const ghost = [
     drag.edge === "start"

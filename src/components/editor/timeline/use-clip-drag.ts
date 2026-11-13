@@ -4,9 +4,12 @@ import { createContext, useContext, useEffect, useLayoutEffect, useMemo, type Re
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { beginMove, beginTrim, resolveDrag, type Drag, type DragGhost } from "@/lib/editor/drag";
 import { HEADER_WIDTH, ROW_HEIGHT, clipsInBox, displayRows, rowAt } from "@/lib/editor/geometry";
+import { mediaLengthFrames } from "@/lib/editor/media-clips";
 import { MESSAGES } from "@/lib/editor/messages";
 import { findClip, viewDoc, type EditorStore } from "@/lib/editor/store";
+import type { AssetView } from "@/lib/media/types";
 import type { OpInput, TimelineDoc } from "@/lib/timeline";
+import { useMedia } from "../media/media-context";
 
 export const CLICK_SLOP_PX = 3; // a press that travels further is a drag, not a click
 const EDGE_ZONE_PX = 32; // a pointer this close to either side of the lanes scrolls them
@@ -60,8 +63,9 @@ export type TimelineDrag = {
 // Dragging clips and box selection for one timeline. A press captures the pointer on the scrolling
 // area, so the drag outlives the clip's element when the clip moves to another row. Pointer moves
 // are worked out at most once per animation frame, against the store's current document, and
-// everything a press set up is taken down when it ends, however it ends.
-export function createTimelineDrag(store: EditorStore): TimelineDrag {
+// everything a press set up is taken down when it ends, however it ends. assetOf reads the media library when a
+// trim begins, so the trim stops where the clip's media ends.
+export function createTimelineDrag(store: EditorStore, assetOf?: (assetId: string) => AssetView | undefined): TimelineDrag {
   const view = createStore<DragView>(() => IDLE);
   let scroller: HTMLElement | null = null;
   let rows: HTMLElement | null = null;
@@ -173,7 +177,9 @@ export function createTimelineDrag(store: EditorStore): TimelineDrag {
       if (Math.hypot(s.x - s.x0, s.y - s.y0) < CLICK_SLOP_PX) return;
       if (s.kind === "clip") {
         const { doc, selection } = store.getState();
-        s.drag = s.grab === "move" ? beginMove(doc, s.clipId, selection.clipIds, s.grabFrame) : beginTrim(doc, s.clipId, s.grab, s.grabFrame);
+        const lengthOf = assetOf ? (assetId: string) => mediaLengthFrames(assetOf(assetId), doc.fps) : undefined;
+        s.drag =
+          s.grab === "move" ? beginMove(doc, s.clipId, selection.clipIds, s.grabFrame) : beginTrim(doc, s.clipId, s.grab, s.grabFrame, lengthOf);
         if (!s.drag) {
           if (!findClip(doc, s.clipId)) store.getState().notify("error", MESSAGES.clipGone);
           return end(false);
@@ -328,14 +334,15 @@ export function createTimelineDrag(store: EditorStore): TimelineDrag {
 export const TimelineDragContext = createContext<TimelineDrag | null>(null);
 
 // One drag controller for the timeline, attached to its scrolling area and its rows, and taken down
-// with it.
+// with it. The library is read when a trim begins, not subscribed to, so a refresh of it never rebuilds the controller.
 export function useTimelineDrag(
   store: EditorStore,
   scrollRef: RefObject<HTMLElement | null>,
   rowsRef: RefObject<HTMLElement | null>,
   zoom: number,
 ): TimelineDrag {
-  const drag = useMemo(() => createTimelineDrag(store), [store]);
+  const { library } = useMedia();
+  const drag = useMemo(() => createTimelineDrag(store, (id) => library.getState().assets[id]), [store, library]);
   useLayoutEffect(() => {
     drag.attach(scrollRef.current, rowsRef.current);
     drag.setZoom(zoom);

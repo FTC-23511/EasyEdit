@@ -2,9 +2,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EditorProvider } from "@/components/editor/context";
 import { LANE_GUTTER } from "@/components/editor/timeline/playhead";
+import { MediaProvider, type MediaServices } from "@/components/editor/media/media-context";
 import { Timeline } from "@/components/editor/timeline/timeline";
-import { HEADER_WIDTH, MAX_CONTENT_PX } from "@/lib/editor/geometry";
-import { act, fireEvent, render, screen } from "../helpers/dom";
+import { HEADER_WIDTH, MAX_CONTENT_PX, formatTimecode } from "@/lib/editor/geometry";
+import { act, fireEvent, render, screen, within } from "../helpers/dom";
+import { assetView, pretendMediaServices } from "../helpers/media-services";
 import { makeStore, sampleDoc, video } from "../editor/fixtures";
 
 // happy-dom does no layout: every element is 1400 px wide, so the lanes measure 1400 − HEADER_WIDTH px. The scroller's
@@ -14,10 +16,16 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-function setup(store = makeStore()) {
+function setup(store = makeStore(), media?: MediaServices) {
   const view = render(
     <EditorProvider store={store}>
-      <Timeline />
+      {media ? (
+        <MediaProvider services={media}>
+          <Timeline />
+        </MediaProvider>
+      ) : (
+        <Timeline />
+      )}
     </EditorProvider>,
   );
   const head = screen.getByRole("slider", { name: "Playhead" });
@@ -178,4 +186,28 @@ it("a 3-hour project at the maximum zoom fills exactly the widest allowed scroll
   act(() => st().setZoom(40)); // too wide for 3 hours: the timeline draws and stores the allowed zoom
   expect(st().zoom).toBeLessThan(40);
   expect(parseFloat((scroller.firstElementChild as HTMLElement).style.width)).toBe(MAX_CONTENT_PX);
+});
+
+it("a media clip carries its asset's name", () => {
+  const range = `${formatTimecode(0, 30)} to ${formatTimecode(30, 30)}`;
+  const media = pretendMediaServices([]);
+  const store = makeStore();
+  const { clip, unmount } = setup(store, media);
+  act(() => store.getState().setZoom(2)); // c1 is 60 px wide: its label fits
+  // Before the library knows the asset, as today.
+  expect(clip("c1").getAttribute("aria-label")).toBe(`Video clip, ${range}`);
+  expect(within(clip("c1")).getByText("Video")).toBeTruthy();
+  act(() => media.library.getState().put(assetView({ name: "intake" })));
+  expect(screen.getByRole("button", { name: `Video clip "intake", ${range}` })).toBe(clip("c1"));
+  expect(within(clip("c1")).getByText("intake")).toBeTruthy();
+  // Pointed at another asset, the clip takes that asset's name.
+  act(() => media.library.getState().put(assetView({ id: "b", name: "climb" })));
+  act(() => void store.getState().edit([{ op: "update_clip", clipId: "c1", patch: { assetId: "b" } }], "swap"));
+  expect(clip("c1").getAttribute("aria-label")).toBe(`Video clip "climb", ${range}`);
+  unmount();
+
+  const bare = setup();
+  act(() => bare.store.getState().setZoom(2));
+  expect(bare.clip("c1").getAttribute("aria-label")).toBe(`Video clip, ${range}`);
+  expect(within(bare.clip("c1")).getByText("Video")).toBeTruthy();
 });

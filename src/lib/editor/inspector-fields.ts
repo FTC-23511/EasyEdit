@@ -1,4 +1,5 @@
 import type { Clip, OpInput } from "@/lib/timeline";
+import { trimBounds } from "./media-clips";
 
 // The inspector shows times in seconds (snapped to whole frames on the way in), and position,
 // scale and opacity in percent, where 50% is the center.
@@ -90,8 +91,9 @@ export function clipFieldValue(clip: Clip, field: ClipField, fps: number): strin
 
 // The ops that set the field to what was typed: null when it is not valid input, [] when it
 // changes nothing. The rules of the change itself (overlaps, locked tracks, what text may hold)
-// stay with applyOps.
-export function clipFieldOps(clip: Clip, field: ClipField, raw: string, fps: number): OpInput[] | null {
+// stay with applyOps. lengthFrames is the length of a media clip's asset in frames, when it is known: a typed
+// length then stops at the end of the media, as a trim on the timeline does.
+export function clipFieldOps(clip: Clip, field: ClipField, raw: string, fps: number, lengthFrames?: number): OpInput[] | null {
   const update = (patch: Record<string, unknown>): OpInput[] => [{ op: "update_clip", clipId: clip.id, patch }];
 
   switch (field) {
@@ -105,7 +107,9 @@ export function clipFieldOps(clip: Clip, field: ClipField, raw: string, fps: num
       const seconds = parseNumber(raw);
       if (seconds === null) return null;
       const duration = Math.max(1, Math.round(seconds * fps));
-      return duration === clip.duration ? [] : [{ op: "trim_clip", clipId: clip.id, edge: "end", to: clip.start + duration }];
+      const maxEnd = clip.type === "text" ? undefined : trimBounds(clip, lengthFrames)?.maxEnd;
+      const to = maxEnd === undefined ? clip.start + duration : Math.max(clip.start + 1, Math.min(clip.start + duration, maxEnd));
+      return to === clip.start + clip.duration ? [] : [{ op: "trim_clip", clipId: clip.id, edge: "end", to }];
     }
     case "x":
     case "y": {

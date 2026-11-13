@@ -13,6 +13,7 @@ export const MESSAGES = {
   nothingToSplit: "Nothing to split at the playhead.",
   nothingToPaste: "Nothing to paste.",
   noRoom: "No room here, and the project can't take more tracks.",
+  mediaNotReady: "This file isn't ready yet.",
 } as const;
 
 const OP_ERROR_MESSAGES: Record<OpErrorCode, string> = {

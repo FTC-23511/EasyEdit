@@ -22,12 +22,17 @@ import {
   parseNumber,
   type ClipField,
 } from "@/lib/editor/inspector-fields";
+import { mediaLengthFrames } from "@/lib/editor/media-clips";
 import { explainOpError } from "@/lib/editor/messages";
 import { TRACK_KIND_LABEL } from "@/lib/editor/placement";
 import { findClip, viewDoc, type EditorStore } from "@/lib/editor/store";
 import { LIMITS } from "@/lib/limits";
+import type { LibraryStore } from "@/lib/media/library-store";
+import { formatLength } from "@/lib/media/messages";
+import { PLACEHOLDER_LABELS } from "@/lib/media/playback";
 import { FORMAT_PRESETS, docDuration, type Clip, type FormatId, type Op, type OpInput, type Track } from "@/lib/timeline";
 import { useEditor, useEditorStore } from "./context";
+import { useLibrary, useMedia } from "./media/media-context";
 import { Timecode } from "./timecode";
 
 const TEXT = "text-[13px] leading-5";
@@ -50,11 +55,15 @@ type Align = (typeof ALIGN_OPTIONS)[number]["value"];
 const HEX = /^#[0-9a-f]{6}$/; // what a color input accepts
 
 // The ops that set a field of the clip as the store holds it now (not as a live gesture shows it):
-// null when the input is not valid, [] when it changes nothing.
-function fieldOps(store: EditorStore, clipId: string, field: ClipField, raw: string) {
+// null when the input is not valid, [] when it changes nothing. A media clip's length stops where its media ends,
+// as far as the library knows it now.
+function fieldOps(store: EditorStore, clipId: string, field: ClipField, raw: string, library?: LibraryStore) {
   const { doc } = store.getState();
   const found = findClip(doc, clipId);
-  return found ? clipFieldOps(found.clip, field, raw, doc.fps) : null;
+  if (!found) return null;
+  const { clip } = found;
+  const lengthFrames = clip.type === "text" || !library ? undefined : mediaLengthFrames(library.getState().assets[clip.assetId], doc.fps);
+  return clipFieldOps(clip, field, raw, doc.fps, lengthFrames);
 }
 
 // Ends a field's edit the way leaving it does. The field's own live gesture is saved as one change;
@@ -134,6 +143,7 @@ function NumberField(props: {
 }) {
   const { clipId, field, label, suffix, ...rest } = props;
   const store = useEditorStore();
+  const { library } = useMedia();
   const canEdit = useEditor((s) => s.canEdit);
   const box = useRef<HTMLInputElement>(null);
   const gesture = useFieldGesture(store, clipId, field);
@@ -165,10 +175,10 @@ function NumberField(props: {
         suffix={suffix}
         onPreview={(v) => {
           if (v === null || !typedIsPlain()) gesture.drop();
-          else gesture.preview(fieldOps(store, clipId, field, String(v)));
+          else gesture.preview(fieldOps(store, clipId, field, String(v), library));
         }}
         onCommit={(v) => {
-          const ops = typedIsPlain() ? fieldOps(store, clipId, field, String(v)) : null;
+          const ops = typedIsPlain() ? fieldOps(store, clipId, field, String(v), library) : null;
           if (ops === null) {
             gesture.drop();
             store.getState().notify("error", explainOpError("INVALID"));
@@ -368,6 +378,31 @@ function TimingSection({ clipId }: { clipId: string }) {
   );
 }
 
+// What the library knows of a media clip's file. Nothing in it can be changed here.
+function MediaSection({ assetId, kind }: { assetId: string; kind: Exclude<Clip["type"], "text"> }) {
+  const asset = useLibrary((s) => s.assets[assetId]);
+  const loaded = useLibrary((s) => s.loaded);
+  let file: string;
+  if (asset) file = asset.removed ? PLACEHOLDER_LABELS.removed : asset.name;
+  else file = loaded ? PLACEHOLDER_LABELS.unknown : PLACEHOLDER_LABELS.loading;
+  const length = kind !== "image" && asset && asset.durationMs !== null ? formatLength(asset.durationMs) : null;
+
+  return (
+    <Section title="Media">
+      <dl className={cx(TEXT, "grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1")}>
+        <dt className={CAPTION}>File</dt>
+        <dd className="truncate text-ed-text">{file}</dd>
+        {length !== null && (
+          <>
+            <dt className={CAPTION}>Media length</dt>
+            <dd className="text-ed-text tabular-nums">{length}</dd>
+          </>
+        )}
+      </dl>
+    </Section>
+  );
+}
+
 function ClipInspector({ clip }: { clip: Clip }) {
   const fps = useEditor((s) => viewDoc(s).fps);
   const canEdit = useEditor((s) => s.canEdit);
@@ -376,7 +411,10 @@ function ClipInspector({ clip }: { clip: Clip }) {
       {clip.type === "text" ? (
         <TextSection clip={clip} fps={fps} canEdit={canEdit} />
       ) : (
-        <h2 className="text-sm leading-5 font-semibold text-ed-text">{MEDIA_TITLE[clip.type]}</h2>
+        <>
+          <h2 className="text-sm leading-5 font-semibold text-ed-text">{MEDIA_TITLE[clip.type]}</h2>
+          <MediaSection assetId={clip.assetId} kind={clip.type} />
+        </>
       )}
       {clip.type !== "audio" && <PositionSection clipId={clip.id} />}
       <TimingSection clipId={clip.id} />

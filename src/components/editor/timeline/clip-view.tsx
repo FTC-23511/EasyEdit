@@ -5,6 +5,7 @@ import { FADE, FOCUS_RING_INSET, cx } from "@/components/ui/cx";
 import { ROW_HEIGHT, formatTimecode, frameToPx } from "@/lib/editor/geometry";
 import type { Clip } from "@/lib/timeline";
 import { useEditor, useEditorStore } from "../context";
+import { useLibrary } from "../media/media-context";
 import { CLICK_SLOP_PX, useClipDrag } from "./use-clip-drag";
 
 const FILL: Record<Clip["type"], string> = {
@@ -22,13 +23,16 @@ export const CLIP_TOP = (ROW_HEIGHT - CLIP_HEIGHT) / 2;
 const MIN_TRIM_PX = 16; // narrower clips have no trim handles, so they can still be grabbed to move
 const HANDLE = cx("absolute inset-y-0 w-1.5 cursor-ew-resize", FADE); // 6 px, as tall as the clip
 
-function clipLabel(clip: Clip): string {
-  return clip.type === "text" ? clip.text.split("\n")[0] : KIND[clip.type];
+// A text clip's first line; a media clip's asset name, or its kind before the library knows the asset.
+function clipLabel(clip: Clip, assetName: string | undefined): string {
+  if (clip.type === "text") return clip.text.split("\n")[0];
+  return assetName ?? KIND[clip.type];
 }
 
-function clipName(clip: Clip, fps: number): string {
+function clipName(clip: Clip, assetName: string | undefined, fps: number): string {
   const range = `${formatTimecode(clip.start, fps)} to ${formatTimecode(clip.start + clip.duration, fps)}`;
-  return clip.type === "text" ? `Text clip "${clipLabel(clip)}", ${range}` : `${KIND[clip.type]} clip, ${range}`;
+  if (clip.type === "text") return `Text clip "${clipLabel(clip, undefined)}", ${range}`;
+  return assetName === undefined ? `${KIND[clip.type]} clip, ${range}` : `${KIND[clip.type]} clip "${assetName}", ${range}`;
 }
 
 type ClipViewProps = { clip: Clip; zoom: number; fps: number; selected: boolean; hidden: boolean; locked: boolean };
@@ -42,6 +46,7 @@ export const ClipView = memo(function ClipView({ clip, zoom, fps, selected, hidd
   const store = useEditorStore();
   const drag = useClipDrag();
   const canEdit = useEditor((s) => s.canEdit);
+  const assetName = useLibrary((s) => (clip.type === "text" ? undefined : s.assets[clip.assetId]?.name));
   const press = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const width = Math.max(2, frameToPx(clip.duration, zoom));
   const dragger = canEdit && !locked ? drag : null; // null for a viewer, a locked track, or outside a timeline
@@ -78,7 +83,7 @@ export const ClipView = memo(function ClipView({ clip, zoom, fps, selected, hidd
     <div
       role="button"
       tabIndex={0}
-      aria-label={clipName(clip, fps)}
+      aria-label={clipName(clip, assetName, fps)}
       aria-pressed={selected}
       data-clip-id={clip.id}
       onPointerDown={onPointerDown}
@@ -96,7 +101,7 @@ export const ClipView = memo(function ClipView({ clip, zoom, fps, selected, hidd
       )}
       style={{ left: frameToPx(clip.start, zoom), top: CLIP_TOP, width, height: CLIP_HEIGHT }}
     >
-      {width >= MIN_LABEL_PX && <span className="min-w-0 truncate px-1.5 text-xs leading-4 text-ed-text">{clipLabel(clip)}</span>}
+      {width >= MIN_LABEL_PX && <span className="min-w-0 truncate px-1.5 text-xs leading-4 text-ed-text">{clipLabel(clip, assetName)}</span>}
       {dragger && width >= MIN_TRIM_PX && (
         <>
           <span aria-hidden data-trim-handle="start" className={cx(HANDLE, "left-0", handleLook(selected))} />
@@ -119,7 +124,8 @@ function drawsTheSame(a: ClipViewProps, b: ClipViewProps): boolean {
     a.clip.type === b.clip.type &&
     a.clip.start === b.clip.start &&
     a.clip.duration === b.clip.duration &&
-    clipLabel(a.clip) === clipLabel(b.clip)
+    clipLabel(a.clip, undefined) === clipLabel(b.clip, undefined) &&
+    (a.clip.type === "text" || b.clip.type === "text" || a.clip.assetId === b.clip.assetId)
   );
 }
 

@@ -2,11 +2,13 @@
 import { describe, expect, it } from "vitest";
 import { EditorProvider } from "@/components/editor/context";
 import { Inspector } from "@/components/editor/inspector";
+import { MediaProvider, type MediaServices } from "@/components/editor/media/media-context";
 import { MESSAGES, explainOpError } from "@/lib/editor/messages";
 import { findClip, viewDoc } from "@/lib/editor/store";
 import { LIMITS } from "@/lib/limits";
-import { entry, makeStore, text } from "../editor/fixtures";
-import { act, fireEvent, render, screen } from "../helpers/dom";
+import { entry, makeStore, sampleDoc, text, video } from "../editor/fixtures";
+import { act, fireEvent, render, screen, within } from "../helpers/dom";
+import { assetView, pretendMediaServices } from "../helpers/media-services";
 
 it("previews while typing and saves one change on blur", () => {
   const store = makeStore();
@@ -297,5 +299,60 @@ describe("fix round 1", () => {
     store.getState().selectTrack(trackId);
     render(<EditorProvider store={store}><Inspector /></EditorProvider>);
     expect(screen.getByText(line)).toBeTruthy();
+  });
+});
+
+describe("media", () => {
+  function showMedia(media: MediaServices, store = makeStore(), clipId = "c1") {
+    store.getState().select([clipId]);
+    const view = render(
+      <EditorProvider store={store}>
+        <MediaProvider services={media}>
+          <Inspector />
+        </MediaProvider>
+      </EditorProvider>,
+    );
+    const section = () => screen.getByRole("heading", { name: "Media" }).parentElement!;
+    // What each caption of the section reads, in order.
+    const facts = () => Object.fromEntries([...section().querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent]));
+    return { view, section, facts, store };
+  }
+
+  it("a media clip shows its file and length", () => {
+    const ready = showMedia(pretendMediaServices([assetView({ name: "intake", durationMs: 12_500 })]));
+    const headings = screen.getAllByRole("heading").map((h) => h.textContent);
+    expect(headings.slice(0, 2)).toEqual(["Video clip", "Media"]);
+    expect(ready.facts()).toEqual({ File: "intake", "Media length": "0:12" });
+    expect(ready.section().querySelector("input, textarea, select, button")).toBeNull();
+    expect(screen.getByLabelText("Length")).toBeTruthy(); // the Timing section's field keeps its name
+    ready.view.unmount();
+
+    const removed = showMedia(pretendMediaServices([assetView({ removed: true })]));
+    expect(removed.facts().File).toBe("Media removed");
+    removed.view.unmount();
+
+    const media = pretendMediaServices([], { loaded: false });
+    const unknown = showMedia(media);
+    expect(unknown.facts()).toEqual({ File: "Loading" });
+    act(() => media.library.setState({ loaded: true }));
+    expect(unknown.facts()).toEqual({ File: "Media not found" });
+    unknown.view.unmount();
+
+    const doc = sampleDoc();
+    doc.tracks[0].clips[0] = video("c1", 0, 30, { type: "image" });
+    // An image has no length, even when the library would give one.
+    const image = showMedia(pretendMediaServices([assetView({ kind: "image", name: "logo", durationMs: 5_000 })]), makeStore({ doc }));
+    expect(screen.getByRole("heading", { name: "Image" })).toBeTruthy();
+    expect(image.facts()).toEqual({ File: "logo" });
+    expect(within(image.section()).queryByText("Media length")).toBeNull();
+  });
+
+  it("a typed length stops at the end of the media", () => {
+    // c2, at 30, is 30 frames from the start of a 2 s video (60 frames at 30 fps): it can end at 90 at the latest.
+    const { store } = showMedia(pretendMediaServices([assetView({ durationMs: 2_000 })]), makeStore(), "c2");
+    const length = screen.getByLabelText("Length");
+    fireEvent.change(length, { target: { value: "10" } });
+    fireEvent.keyDown(length, { key: "Enter" });
+    expect(store.getState().queue).toMatchObject([{ label: "timing change", ops: [{ op: "trim_clip", clipId: "c2", edge: "end", to: 90 }] }]);
   });
 });
