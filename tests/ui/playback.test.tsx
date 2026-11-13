@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorProvider } from "@/components/editor/context";
 import { MediaProvider, type MediaServices } from "@/components/editor/media/media-context";
+import { upcomingWants } from "@/components/editor/media/media-pool";
 import { Preview } from "@/components/editor/preview";
 import { usePlayback } from "@/components/editor/use-playback";
 import { mediaWants } from "@/lib/editor/media-plan";
@@ -34,7 +35,10 @@ const { sync, pool } = vi.hoisted(() => {
   };
   return { sync: pool.sync, pool };
 });
-vi.mock("@/components/editor/media/media-pool", () => ({ createMediaPool: () => pool }));
+vi.mock("@/components/editor/media/media-pool", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/editor/media/media-pool")>()),
+  createMediaPool: () => pool,
+}));
 
 // A hand-run animation-frame queue and clock.
 let frames: Map<number, FrameRequestCallback>;
@@ -186,7 +190,8 @@ describe("the preview canvas", () => {
     sync.mockClear();
     act(() => store.getState().pause()); // a hidden tab runs no animation frame after this
     expect(sync).toHaveBeenCalledTimes(1);
-    expect(sync).toHaveBeenCalledWith(mediaWants(viewDoc(store.getState()), 30, { playing: false, rate: 1 }));
+    const doc = viewDoc(store.getState());
+    expect(sync).toHaveBeenCalledWith(mediaWants(doc, 30, { playing: false, rate: 1 }), upcomingWants(doc, 30));
   });
 
   it("draws once when it appears, and asks for no second frame", () => {
@@ -201,7 +206,8 @@ describe("the preview canvas", () => {
     runFrame(16);
     const doc = viewDoc(store.getState());
     expect(pool.preload.mock.calls).toEqual([[["a"]]]);
-    expect(pool.sync.mock.calls).toEqual([[mediaWants(doc, 10, { playing: false, rate: 1 })]]);
+    expect(pool.sync.mock.calls).toEqual([[mediaWants(doc, 10, { playing: false, rate: 1 }), upcomingWants(doc, 10)]]);
+    expect(upcomingWants(doc, 10).map((want) => want.clipId)).toEqual(["c2"]); // starts within the window: readied now
     expect(pool.preload.mock.invocationCallOrder[0]).toBeLessThan(pool.sync.mock.invocationCallOrder[0]);
     expect(pool.sync.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(drawFrame).mock.invocationCallOrder[0]);
     expect(vi.mocked(drawFrame).mock.calls).toEqual([[ctx, doc, 10, expect.objectContaining({ resolveSource: pool.resolveSource, placeholderLabel: pool.label })]]);
@@ -212,10 +218,11 @@ describe("the preview canvas", () => {
     mountPreview(store);
     act(() => store.getState().play());
     runFrame(10); // too soon for the loop to move the playhead
-    expect(pool.sync.mock.calls).toEqual([[mediaWants(viewDoc(store.getState()), 0, { playing: true, rate: 1 })]]);
+    const doc = viewDoc(store.getState());
+    expect(pool.sync.mock.calls).toEqual([[mediaWants(doc, 0, { playing: true, rate: 1 }), upcomingWants(doc, 0)]]);
     act(() => store.getState().shuttle("l"));
     runFrame(20);
-    expect(pool.sync.mock.calls.at(-1)).toEqual([mediaWants(viewDoc(store.getState()), 0, { playing: true, rate: 2 })]);
+    expect(pool.sync.mock.calls.at(-1)).toEqual([mediaWants(doc, 0, { playing: true, rate: 2 }), upcomingWants(doc, 0)]);
     expect(drawFrame).toHaveBeenCalledTimes(2);
   });
 

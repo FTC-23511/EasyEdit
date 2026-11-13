@@ -8,7 +8,10 @@ import { IconButton } from "./icon-button";
 export type DialogProps = { title: string; open: boolean; onClose(): void; children: ReactNode; className?: string };
 
 // A modal on the native <dialog>, so focus stays inside it and the page behind is inert. Escape and
-// the Close button ask the caller to close it through onClose; open decides.
+// the Close button ask the caller to close it through onClose; open decides. On opening, focus goes to
+// the first element marked data-autofocus, a field's text selected so typing replaces it; with none
+// marked, the browser's choice stands. React's autoFocus cannot do this: the contents mount while the
+// dialog is still closed.
 export function Dialog({ title, open, onClose, children, className }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -16,8 +19,12 @@ export function Dialog({ title, open, onClose, children, className }: DialogProp
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    else if (!open && dialog.open) dialog.close();
+    if (open && !dialog.open) {
+      dialog.showModal();
+      const marked = dialog.querySelector<HTMLElement>("[data-autofocus]");
+      marked?.focus();
+      if (marked instanceof HTMLInputElement) marked.select();
+    } else if (!open && dialog.open) dialog.close();
   }, [open]);
 
   return (

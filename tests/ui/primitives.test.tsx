@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { Plus } from "lucide-react";
 import { useState } from "react";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { IconButton } from "@/components/ui/icon-button";
 import { Menu } from "@/components/ui/menu";
 import { NumberInput } from "@/components/ui/number-input";
@@ -12,6 +13,8 @@ import { TextArea } from "@/components/ui/text-area";
 import { TextInput } from "@/components/ui/text-input";
 import { Toggle } from "@/components/ui/toggle";
 import { fireEvent, render, screen } from "../helpers/dom";
+
+afterEach(() => vi.restoreAllMocks());
 
 const ALIGN = [
   { value: "left", label: "Left" },
@@ -80,4 +83,33 @@ it("a menu disabled while open stays closed when it is enabled again", () => {
   expect(screen.queryByRole("menu")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Switch" }));
   expect(screen.queryByRole("menu")).toBeNull();
+});
+
+it("a dialog opens with focus on its marked field, text selected; with none marked the browser's choice stands", () => {
+  // As a browser's showModal: the first control takes focus, here the header's Close.
+  vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+    this.querySelector<HTMLElement>("button, input")?.focus();
+  });
+  function Shown({ marked }: { marked: boolean }) {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button onClick={() => setOpen(true)}>Open</button>
+        <Dialog title="Rename" open={open} onClose={() => setOpen(false)}>
+          <TextInput aria-label="Name" defaultValue="field" data-autofocus={marked || undefined} />
+        </Dialog>
+      </>
+    );
+  }
+  const { unmount } = render(<Shown marked />);
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
+  const name = screen.getByLabelText("Name") as HTMLInputElement;
+  expect(document.activeElement).toBe(name);
+  expect([name.selectionStart, name.selectionEnd]).toEqual([0, 5]);
+  unmount();
+
+  render(<Shown marked={false} />);
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
 });

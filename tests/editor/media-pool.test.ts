@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_IDLE_ELEMENTS, createMediaPool, type MediaElement } from "@/components/editor/media/media-pool";
-import type { MediaWant } from "@/lib/editor/media-plan";
+import { MAX_IDLE_ELEMENTS, createMediaPool, upcomingWants, type MediaElement, type MediaPool } from "@/components/editor/media/media-pool";
+import { mediaWants, upcomingAssetIds, type MediaWant } from "@/lib/editor/media-plan";
 import { createMediaFiles, createMemoryStore } from "@/lib/media/media-files";
 import { IMAGE_MAX_SIDE } from "@/lib/media/preview-spec";
 import type { AssetView } from "@/lib/media/types";
-import type { MediaClip } from "@/lib/timeline";
+import { drawFrame } from "@/lib/render/compositor";
+import { createEmptyDoc, type Clip, type MediaClip, type TimelineDoc } from "@/lib/timeline";
 import { assetView } from "../helpers/media-services";
 import { video } from "./fixtures";
 
@@ -436,5 +437,128 @@ describe("the media pool, further", () => {
     expect(h.changes).not.toHaveBeenCalled();
     expect(h.pool.resolveSource(clip("c1", "i", "image"), 0)).toBeNull();
     expect(h.pool.label(clip("c1", "i", "image"))).toBe("Loading");
+  });
+});
+
+describe("the media pool at a cut", () => {
+  // A browser loads an element that was given an address between two frames, never in the draw that gave it one.
+  const browserLoads = (made: Pretend[]) => {
+    for (const el of made) {
+      if (el.src === "" || el.readyState >= 2) continue;
+      el.readyState = 2;
+      el.fire("loadeddata");
+    }
+  };
+
+  // What the compositor draws of the media at a frame: "picture" for a clip drawn from an element, else the
+  // placeholder's label.
+  function drawn(pool: MediaPool, doc: TimelineDoc, frame: number): string[] {
+    const marks: string[] = [];
+    const methods: Record<string, unknown> = {
+      drawImage: () => marks.push("picture"),
+      fillText: (text: string) => marks.push(text),
+      measureText: () => ({ width: 0 }),
+    };
+    const ctx = new Proxy({}, { get: (_target, key) => methods[String(key)] ?? (() => {}), set: () => true });
+    drawFrame(ctx as CanvasRenderingContext2D, doc, frame, { resolveSource: pool.resolveSource, placeholderLabel: pool.label });
+    return marks;
+  }
+
+  const oneTrack = (clips: Clip[]) => {
+    const doc = createEmptyDoc("short_9x16");
+    doc.tracks[0].clips = clips;
+    return doc;
+  };
+
+  type Harness = Awaited<ReturnType<typeof setup>>;
+  // One draw of the preview at a frame, as preview.tsx makes it, and then the time until the next frame.
+  async function frameAt(h: Harness, doc: TimelineDoc, frame: number): Promise<string[]> {
+    h.pool.preload(upcomingAssetIds(doc, frame));
+    h.pool.sync(mediaWants(doc, frame, { playing: true, rate: 1 }), upcomingWants(doc, frame));
+    const marks = drawn(h.pool, doc, frame);
+    await settle();
+    browserLoads(h.made);
+    return marks;
+  }
+
+  it("playing across a cut between two clips of one file draws a picture at the cut, not Loading", async () => {
+    const h = await setup();
+    const doc = oneTrack([video("c1", 0, 30), video("c2", 30, 30, { in: 30 })]);
+    for (let frame = 0; frame < 30; frame++) await frameAt(h, doc, frame);
+    expect(await frameAt(h, doc, 30)).toEqual(["picture"]);
+  });
+
+  it("a clip of another file that starts within the read-ahead window has its element made and loading before it starts", async () => {
+    const h = await setup({ assets: [videoAsset(), videoAsset({ id: "b", previewFileId: "p2" })], stored: ["p1", "p2"] });
+    const doc = oneTrack([video("c1", 0, 30), video("c3", 30, 30, { assetId: "b", in: 60 })]);
+    expect(upcomingWants(doc, 0)).toEqual([{ clipId: "c3", assetId: "b", type: "video", seconds: 2, rate: 0, volume: 0 }]);
+    expect(upcomingWants(doc, 30)).toEqual([]); // under the playhead now, so wanted as it plays
+    expect(upcomingWants(oneTrack([video("c3", 61, 30, { assetId: "b" })]), 0)).toEqual([]); // past the 2 s window
+
+    await frameAt(h, doc, 0);
+    await frameAt(h, doc, 1);
+    const ahead = h.made.find((el) => el.src.startsWith("blob:p2"));
+    expect(ahead).toMatchObject({ paused: true, muted: true, volume: 0, currentTime: 2, readyState: 2, plays: 0 });
+    for (let frame = 2; frame < 30; frame++) await frameAt(h, doc, frame);
+    expect(await frameAt(h, doc, 30)).toEqual(["picture"]);
+    expect(h.made).toHaveLength(2);
+    expect(ahead).toMatchObject({ paused: false, muted: false, volume: 1, plays: 1 });
+  });
+
+  it("a split's right piece takes over the left piece's element, which has data, so it shows at once", async () => {
+    const h = await setup();
+    await h.syncSettled([want("c1", "a", { seconds: 0.5 })]);
+    const [el] = h.made;
+    browserLoads(h.made);
+    // The playhead is on the new right piece now, and the left piece is idle.
+    h.pool.sync([want("g1", "a", { seconds: 0.5 })]);
+    expect(h.made).toEqual([el]);
+    expect(h.pool.resolveSource(clip("g1"), 15)).toEqual({ image: el, width: 1280, height: 720 });
+    // Back on the left piece, which takes it again.
+    h.pool.sync([want("c1", "a", { seconds: 0.4 })]);
+    expect(h.made).toEqual([el]);
+    expect(el.currentTime).toBe(0.4);
+    // An audio clip of the file gets an audio element of its own.
+    h.pool.sync([want("m1", "a", { type: "audio", seconds: 0.4 })]);
+    expect(h.made.map((made) => made.kind)).toEqual(["video", "audio"]);
+  });
+
+  it("an element read ahead stays its clip's: another clip of the file does not take it", async () => {
+    const h = await setup();
+    const ahead = want("c2", "a", { seconds: 1 });
+    h.pool.sync([], [ahead]);
+    await settle();
+    h.pool.sync([], [ahead]);
+    const [el] = h.made;
+    browserLoads(h.made);
+    expect(el).toMatchObject({ paused: true, muted: true, volume: 0, currentTime: 1 });
+    h.pool.sync([want("c9", "a", { rate: 1, volume: 1 })], [ahead]);
+    expect(h.made).toHaveLength(2);
+    expect(h.pool.resolveSource(clip("c2"), 30)).toEqual({ image: el, width: 1280, height: 720 });
+    expect(el.paused).toBe(true);
+  });
+
+  it("while a clip's own element has no data yet, an idle element of the same file stands in", async () => {
+    const h = await setup();
+    const playing = want("c1", "a", { rate: 1, volume: 1, seconds: 0.9 });
+    const next = want("c2", "a", { seconds: 1 });
+    h.pool.sync([playing], [next]);
+    await settle();
+    h.pool.sync([playing], [next]);
+    const [first, second] = h.made;
+    Object.assign(first, { readyState: 2 }).fire("loadeddata"); // the second has not loaded yet
+    const cut = { ...next, rate: 1, volume: 1 };
+    h.pool.sync([cut]);
+    expect(h.pool.resolveSource(clip("c2"), 30)).toEqual({ image: first, width: 1280, height: 720 });
+    // An element another clip is playing is not borrowed.
+    h.pool.sync([cut, playing]);
+    expect(h.pool.resolveSource(clip("c2"), 30)).toBeNull();
+    h.pool.sync([cut]);
+    Object.assign(second, { readyState: 2 }).fire("loadeddata");
+    expect(h.pool.resolveSource(clip("c2"), 30)).toEqual({ image: second, width: 1280, height: 720 });
+    // An element that failed shows that it failed.
+    second.fire("error");
+    expect(h.pool.resolveSource(clip("c2"), 30)).toBeNull();
+    expect(h.pool.label(clip("c2"))).toBe("Can't load media");
   });
 });

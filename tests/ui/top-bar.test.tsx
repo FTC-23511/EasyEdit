@@ -2,10 +2,12 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { EditorProvider } from "@/components/editor/context";
 import { EditorScreen } from "@/components/editor/editor-screen";
+import { MediaProvider } from "@/components/editor/media/media-context";
 import { TopBar } from "@/components/editor/top-bar";
 import type { SyncStatus } from "@/lib/editor/types";
 import { makeStore } from "../editor/fixtures";
 import { act, fireEvent, render, screen } from "../helpers/dom";
+import { pretendMediaServices } from "../helpers/media-services";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -44,16 +46,19 @@ it("'Sign in' opens in a new tab, so the editor and its unsent edits stay", () =
   expect(link.getAttribute("rel")).toBe("noopener");
 });
 
-// Clicks "Projects" in a top bar whose store has `queued` unsent edits and the given status.
-// Returns whether the page was loaded for real (the browser then asks before unsent edits go).
-function leaveWith(queued: number, status: SyncStatus, click: Partial<MouseEventInit> = {}) {
+// Clicks "Projects" in a top bar whose store has `queued` unsent edits and the given status, with `uploading`
+// uploads running. Returns whether the page was loaded for real (the browser then asks before anything is lost).
+function leaveWith(queued: number, status: SyncStatus, click: Partial<MouseEventInit> = {}, uploading = 0) {
   const store = makeStore();
   for (let i = 0; i < queued; i++) store.getState().edit([{ op: "move_clip", clipId: "x2", start: 100 + i }], "move");
   store.getState().setStatus(status);
   const assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+  const media = pretendMediaServices([]);
   const { unmount } = render(
     <EditorProvider store={store}>
-      <TopBar onShowShortcuts={() => {}} />
+      <MediaProvider services={{ ...media, queue: { ...media.queue, active: () => uploading } }}>
+        <TopBar onShowShortcuts={() => {}} />
+      </MediaProvider>
     </EditorProvider>,
   );
   const leftToTheApp = fireEvent.click(screen.getByRole("link", { name: "Projects" }), click);
@@ -74,6 +79,13 @@ it("'Projects' loads the page for real when queued edits cannot be sent, so the 
   expect(leaveWith(2, "signed-out")).toEqual({ reloaded: true, assigned: ["/dashboard"] });
   // A click that opens a new tab leaves this one as it is.
   expect(leaveWith(1, "offline", { metaKey: true })).toEqual({ reloaded: false, assigned: [] });
+});
+
+it("'Projects' loads the page for real while an upload runs, so the browser asks before stopping it", () => {
+  expect(leaveWith(0, "saved", {}, 1)).toEqual({ reloaded: true, assigned: ["/dashboard"] });
+  expect(leaveWith(2, "saving", {}, 1)).toEqual({ reloaded: true, assigned: ["/dashboard"] });
+  expect(leaveWith(1, "deleted", {}, 2)).toEqual({ reloaded: true, assigned: ["/dashboard"] });
+  expect(leaveWith(0, "saved", { metaKey: true }, 1)).toEqual({ reloaded: false, assigned: [] });
 });
 
 it("'Back to projects' on a deleted project leaves without asking: its edits can never be saved", () => {

@@ -199,7 +199,7 @@ export function Timeline() {
             className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-center text-[13px] leading-5 text-ed-muted"
             style={{ left: HEADER_WIDTH, top: RULER_HEIGHT }}
           >
-            {canEdit ? "Nothing on the timeline yet. Add text from the panel on the left." : "Nothing on the timeline yet."}
+            {canEdit ? "Nothing on the timeline yet. Add text or media from the panel on the left." : "Nothing on the timeline yet."}
           </p>
         )}
       </div>

@@ -68,6 +68,12 @@ export function EditorShell({ initial }: { initial: EditorInit }) {
       else window.removeEventListener("beforeunload", onBeforeUnload);
     };
     const capture = { capture: true, passive: true };
+    // A file dropped anywhere but the Media tab does nothing; the browser would open it in place of the editor. The
+    // tab handles its own drops first. A drag of text or of something on the page is left alone.
+    const onFileDrag = (event: DragEvent) => {
+      if (event.defaultPrevented || ![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+      event.preventDefault();
+    };
 
     sync.start();
     quietly(library.getState().refresh("open"));
@@ -81,6 +87,8 @@ export function EditorShell({ initial }: { initial: EditorInit }) {
     window.addEventListener("focus", onFocus);
     window.addEventListener("pointerdown", onActivity, capture);
     window.addEventListener("keydown", onActivity, capture);
+    window.addEventListener("dragover", onFileDrag);
+    window.addEventListener("drop", onFileDrag);
     guardUnload(unsaved());
     const unsubscribe = store.subscribe((state, before) => {
       guardUnload(unsaved());
@@ -97,6 +105,8 @@ export function EditorShell({ initial }: { initial: EditorInit }) {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("pointerdown", onActivity, capture);
       window.removeEventListener("keydown", onActivity, capture);
+      window.removeEventListener("dragover", onFileDrag);
+      window.removeEventListener("drop", onFileDrag);
       unsubscribe();
       unsubscribeLibrary();
       guardUnload(false);

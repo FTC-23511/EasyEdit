@@ -171,6 +171,17 @@ describe("the list", () => {
     expect(row("theme").textContent).toContain(MEDIA_MESSAGES.formerMember);
   });
 
+  it("a row's length, uploader and preview note are its description; its name stays the action", async () => {
+    const PENDING = asset({ id: "v2", name: "pit", durationMs: 12_500, previewStatus: "pending", previewFileId: null, createdAt: "2026-11-08T10:00:00.000Z" });
+    setup({ listed: [FIELD, PENDING] });
+    await openMedia();
+    const description = (button: HTMLElement) =>
+      (button.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean).map((id) => document.getElementById(id)?.textContent);
+    expect(description(row("field"))).toEqual(["0:12 · Ada"]);
+    expect(description(row("pit"))).toEqual(["0:12 · Ada", PLACEHOLDER_LABELS.preparing]);
+    expect(rowNames()).toEqual(["Add field to the timeline", "Add pit to the timeline"]);
+  });
+
   it("rows that are off screen do not ask for their picture", async () => {
     const watched: Element[] = [];
     let report: IntersectionObserverCallback = () => {};
@@ -375,6 +386,10 @@ describe("uploading", () => {
     await openMedia();
     const field = screen.getByLabelText("Event for new uploads") as HTMLInputElement;
     expect(field.placeholder).toBe("Qualifier 2026-11-08");
+    // Named by the label through an explicit reference, not by how a browser reads a label wrapped around its field.
+    const labelIds = (field.getAttribute("aria-labelledby") ?? "").split(" ");
+    expect(labelIds.map((id) => document.getElementById(id)?.textContent)).toEqual(["Event for new uploads"]);
+    expect(screen.getByRole("textbox", { name: "Event for new uploads" })).toBe(field);
     fireEvent.change(field, { target: { value: "Scrimmage" } });
     expect(library.getState().uploadEvent).toBe("Scrimmage");
   });
@@ -522,7 +537,32 @@ describe("who may change what", () => {
   });
 });
 
+// showModal as a browser runs it: focus goes to the first element with an autofocus attribute, else the first control.
+// React's autoFocus writes no such attribute, and happy-dom's own showModal moves no focus.
+function browserShowModal() {
+  vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+    (this.querySelector<HTMLElement>("[autofocus]") ?? this.querySelector<HTMLElement>("button, input, select, textarea, a[href]"))?.focus();
+  });
+}
+
 describe("changing an asset", () => {
+  it("Rename and Set event open with focus in the field and its text selected", async () => {
+    browserShowModal();
+    setup();
+    await openMedia();
+    let dialog = await choose("field", "Rename");
+    const name = within(dialog).getByLabelText("Name") as HTMLInputElement;
+    expect(document.activeElement).toBe(name);
+    expect([name.selectionStart, name.selectionEnd]).toEqual([0, "field".length]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    dialog = await choose("IMG_4821", "Set event");
+    const event = within(dialog).getByLabelText("Event") as HTMLInputElement;
+    expect(document.activeElement).toBe(event);
+    expect([event.selectionStart, event.selectionEnd]).toEqual([0, "Qualifier 2026-11-08".length]);
+  });
+
   it("renames an asset", async () => {
     const { api } = setup();
     await openMedia();
@@ -581,6 +621,35 @@ describe("changing an asset", () => {
     expect(api.update).not.toHaveBeenCalled();
   });
 
+  it("a save or a removal that answers after Cancel leaves the next dialog open", async () => {
+    const { api } = setup();
+    await openMedia();
+    let answerRename: (answer: MediaResult<{ asset: AssetView }>) => void = () => {};
+    api.update.mockImplementationOnce(() => new Promise((resolve) => (answerRename = resolve)));
+    let dialog = await choose("field", "Rename");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Climb" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    dialog = await choose("IMG_4821", "Set event");
+    await act(async () => answerRename({ ok: true, asset: { ...FIELD, name: "Climb" } }));
+    expect(within(screen.getByRole("dialog")).getByRole("heading", { name: "Set event" })).toBeTruthy();
+    expect(row("Climb")).toBeTruthy(); // the rename itself went through
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    let answerRemoval: (answer: MediaResult<object>) => void = () => {};
+    api.remove.mockImplementationOnce(() => new Promise((resolve) => (answerRemoval = resolve)));
+    dialog = await choose("Climb", "Remove");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    dialog = await choose("IMG_4821", "Rename");
+    const name = within(dialog).getByLabelText("Name");
+    expect(document.activeElement).toBe(name);
+    await act(async () => answerRemoval({ ok: true }));
+    expect(within(screen.getByRole("dialog")).getByRole("heading", { name: "Rename" })).toBeTruthy();
+    expect(document.activeElement).toBe(name); // focus stays where the person is typing
+  });
+
   it("sets an event, and saving it empty clears it", async () => {
     const { api } = setup();
     await openMedia();
@@ -621,6 +690,24 @@ describe("changing an asset", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(row("field")).toBeTruthy();
     expect(api.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a removal, focus goes to the next row, else the one before, else the search field", async () => {
+    const THEME = asset({ id: "a1", kind: "audio", name: "theme", durationMs: 95_000, posterFileId: null, previewStatus: "none", createdAt: "2026-11-05T10:00:00.000Z" });
+    setup({ listed: [FIELD, PHOTO, THEME] });
+    await openMedia();
+    const removeRow = async (name: string) => {
+      const dialog = await choose(name, "Remove");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+      await flush();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    };
+    await removeRow("IMG_4821");
+    expect(document.activeElement).toBe(row("theme"));
+    await removeRow("theme");
+    expect(document.activeElement).toBe(row("field"));
+    await removeRow("field");
+    expect(document.activeElement).toBe(screen.getByLabelText("Search media"));
   });
 
   it("removal that succeeds takes the row away", async () => {

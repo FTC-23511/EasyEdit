@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { EditorProvider } from "@/components/editor/context";
 import { EditorScreen } from "@/components/editor/editor-screen";
 import { createClipboard } from "@/lib/editor/clipboard";
-import { shortcutFor } from "@/lib/editor/shortcuts";
+import { shortcutFor, shouldIgnoreKey } from "@/lib/editor/shortcuts";
 import { makeStore } from "../editor/fixtures";
 import { act, fireEvent, render, screen } from "../helpers/dom";
 
@@ -136,6 +136,29 @@ it("? opens the list of shortcuts, and Escape closes it without clearing the sel
   expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
   expect(dialog?.open).toBe(false);
   expect(st().selection.clipIds).toEqual(["x1"]);
+});
+
+it("keys pressed on a button inside an open dialog never split or delete the clip behind it", () => {
+  const { st } = show();
+  act(() => st().seek(10)); // on x1, which is selected: S would split it
+  press(document.body, "?", { shiftKey: true });
+  const close = screen.getAllByRole("button", { name: "Close" }).find((button) => button.closest("dialog[open]"))!;
+  close.focus();
+  for (const key of ["s", "Backspace", "Delete"]) expect(press(close, key)).toBe(true);
+  expect(st().queue).toEqual([]);
+  expect(st().selection.clipIds).toEqual(["x1"]);
+
+  // The rule is the key's own, wherever the listener is: a key whose target is inside an open dialog is ignored.
+  const dialog = document.createElement("dialog");
+  const button = document.createElement("button");
+  dialog.append(button);
+  document.body.append(dialog);
+  onTestFinished(() => dialog.remove()); // an open dialog left behind would hold every later test's keys
+  const s = { key: "s", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
+  expect(shouldIgnoreKey(s, button)).toBe(false);
+  dialog.setAttribute("open", "");
+  expect(shouldIgnoreKey(s, button)).toBe(true);
+  expect(shouldIgnoreKey({ ...s, key: "Backspace" }, button)).toBe(true);
 });
 
 it("the top bar opens the list of shortcuts too", () => {

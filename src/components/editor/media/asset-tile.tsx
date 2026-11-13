@@ -1,7 +1,7 @@
 "use client";
 
 import { Ellipsis, Music } from "lucide-react";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import { FADE, FOCUS_RING, DISABLED, cx } from "@/components/ui/cx";
 import { Menu, type MenuItem } from "@/components/ui/menu";
 import { MEDIA_MESSAGES, formatLength } from "@/lib/media/messages";
@@ -53,14 +53,19 @@ export const AssetTile = memo(function AssetTile({ asset, canEdit, watch, onAdd,
   const note = previewNote(asset);
   const length = asset.kind === "image" ? "Image" : asset.durationMs === null ? null : formatLength(asset.durationMs);
   const details = [length, firstName(asset.uploadedByName)].filter(Boolean).join(" · ");
+  // The button's name is what it does; its length, uploader and note are read as its description.
+  const detailsId = useId();
+  const noteId = useId();
 
   return (
     <li ref={box} className="flex min-w-0 items-center gap-1">
       <button
         type="button"
         data-edit-control
+        data-asset-id={asset.id}
         disabled={!canEdit}
         aria-label={`Add ${asset.name} to the timeline`}
+        aria-describedby={note ? `${detailsId} ${noteId}` : detailsId}
         className={cx("flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left enabled:hover:bg-ed-hover", FOCUS_RING, FADE, DISABLED)}
         onClick={() => onAdd?.(asset)}
       >
@@ -74,8 +79,14 @@ export const AssetTile = memo(function AssetTile({ asset, canEdit, watch, onAdd,
         </span>
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-[13px] leading-5 text-ed-text">{asset.name}</span>
-          <span className="truncate text-[11px] leading-4 text-ed-muted">{details}</span>
-          {note && <span className="truncate text-[11px] leading-4 text-ed-muted">{note}</span>}
+          <span id={detailsId} className="truncate text-[11px] leading-4 text-ed-muted">
+            {details}
+          </span>
+          {note && (
+            <span id={noteId} className="truncate text-[11px] leading-4 text-ed-muted">
+              {note}
+            </span>
+          )}
         </span>
       </button>
       <Menu

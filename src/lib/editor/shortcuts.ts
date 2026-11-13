@@ -110,17 +110,19 @@ export function matchShortcut(event: KeyLike, isMac: boolean): CommandId | null 
 const TYPING_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 const PRESSABLE_TAGS = new Set(["BUTTON", "A", "SUMMARY"]);
 
-type KeyTarget = { tagName?: string; isContentEditable?: boolean };
+type KeyTarget = { tagName?: string; isContentEditable?: boolean; closest?(selectors: string): unknown };
 
 // A button, link or summary: the space bar and Enter press it.
 export function isPressable(target: KeyTarget): boolean {
   return PRESSABLE_TAGS.has(target.tagName?.toUpperCase() ?? "");
 }
 
-// True when the key belongs to what has focus: anything typed into a field, and the space bar or
-// Enter on a button or link, which presses it.
+// True when the key belongs to what has focus: any key inside an open dialog, which stands in front of
+// the editor; anything typed into a field; and the space bar or Enter on a button or link, which
+// presses it.
 export function shouldIgnoreKey(event: KeyLike, target: KeyTarget | null): boolean {
   if (!target) return false;
+  if (target.closest?.("dialog[open]")) return true;
   const tag = target.tagName?.toUpperCase() ?? "";
   if (TYPING_TAGS.has(tag) || target.isContentEditable) return true;
   return (event.key === " " || event.key === "Enter") && isPressable(target);

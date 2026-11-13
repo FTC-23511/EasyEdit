@@ -1,7 +1,7 @@
 "use client";
 
 import { Upload } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent, type HTMLAttributes } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type DragEvent, type FormEvent, type HTMLAttributes } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";
@@ -104,6 +104,8 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
   const [dragging, setDragging] = useState(false);
   const [editing, setEditing] = useState<{ action: AssetAction; asset: AssetView } | null>(null);
   const { scroller, watch } = useRowsInView();
+  const eventLabelId = useId();
+  const search = useRef<HTMLInputElement>(null);
 
   // The library is fetched when the tab opens, and again after each refused edit while it is open: an asset that a
   // teammate removed is then gone from the list, so a second click cannot repeat the refusal.
@@ -116,6 +118,28 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
   }, [library, store]);
 
   const onAction = useCallback((action: AssetAction, asset: AssetView) => setEditing({ action, asset }), []);
+
+  // What to focus once the dialog has closed: focus cannot leave a modal dialog that is open. Dialog's own effect,
+  // which closes it, runs before this one.
+  const afterClose = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (editing !== null) return;
+    const run = afterClose.current;
+    afterClose.current = null;
+    run?.();
+  }, [editing]);
+
+  // A removed asset's row goes, and with it the More button that had focus: focus goes to the next row, else the one
+  // before, else the search field.
+  function onRemoved(removed: AssetView) {
+    const at = assets.findIndex((asset) => asset.id === removed.id);
+    const near = at === -1 ? [] : [assets[at + 1], assets[at - 1]].flatMap((asset) => (asset ? [asset.id] : []));
+    afterClose.current = () => {
+      const buttons = [...(scroller.current?.querySelectorAll<HTMLElement>("[data-asset-id]") ?? [])];
+      const button = near.map((id) => buttons.find((b) => b.dataset.assetId === id)).find((b) => b !== undefined);
+      (button ?? search.current)?.focus();
+    };
+  }
 
   function onDragOver(event: DragEvent<HTMLDivElement>) {
     if (!carriesFiles(event)) return;
@@ -164,8 +188,14 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
               if (canUpload && files.length > 0) queue.add(files);
             }}
           />
-          <Field label="Event for new uploads">
+          {/* Field's look, with the label's text naming the field outright: in Edge the wrapping label alone left the
+              placeholder as its name. */}
+          <label className="flex min-w-0 flex-col gap-1">
+            <span id={eventLabelId} className="text-xs font-medium text-ed-muted">
+              Event for new uploads
+            </span>
             <TextInput
+              aria-labelledby={eventLabelId}
               data-edit-control
               disabled={!canUpload}
               placeholder="Qualifier 2026-11-08"
@@ -173,7 +203,7 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
               value={uploadEvent}
               onChange={(event) => library.getState().setUploadEvent(event.target.value)}
             />
-          </Field>
+          </label>
           {!setUp && <p className="text-[13px] leading-5 text-ed-muted">{MEDIA_MESSAGES.notSetUp}</p>}
         </div>
 
@@ -193,8 +223,9 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
         )}
 
         <div className="flex flex-col gap-2">
-          <TextInput type="search" aria-label="Search media" placeholder="Search" value={query} onChange={(event) => library.getState().setQuery(event.target.value)} />
-          <Segmented label="Kind" value={kind} options={KINDS} onChange={(value) => library.getState().setKind(value)} />
+          <TextInput ref={search} type="search" aria-label="Search media" placeholder="Search" value={query} onChange={(event) => library.getState().setQuery(event.target.value)} />
+          {/* Tighter padding than the shared control's, so "Images" fits in a quarter of the panel's default width. */}
+          <Segmented label="Kind" className="[&>button]:px-1" value={kind} options={KINDS} onChange={(value) => library.getState().setKind(value)} />
         </div>
 
         {problem === "signed-out" ? (
@@ -229,7 +260,7 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
         </div>
       )}
 
-      <AssetDialog editing={editing} onClose={() => setEditing(null)} />
+      <AssetDialog editing={editing} onRemoved={onRemoved} onClose={() => setEditing(null)} />
     </div>
   );
 }
@@ -240,8 +271,10 @@ const TITLES: Record<AssetAction, (name: string) => string> = {
   remove: (name) => `Remove "${name}"?`,
 };
 
+type AssetDialogProps = { editing: { action: AssetAction; asset: AssetView } | null; onRemoved(asset: AssetView): void; onClose(): void };
+
 // Rename, Set event and Remove. Each changes the asset through the library store; a refusal is shown in the dialog.
-function AssetDialog({ editing, onClose }: { editing: { action: AssetAction; asset: AssetView } | null; onClose(): void }) {
+function AssetDialog({ editing, onRemoved, onClose }: AssetDialogProps) {
   const { library } = useMedia();
   return (
     <Dialog title={editing ? TITLES[editing.action](editing.asset.name) : ""} open={editing !== null} onClose={onClose}>
@@ -265,9 +298,29 @@ function AssetDialog({ editing, onClose }: { editing: { action: AssetAction; ass
           onClose={onClose}
         />
       )}
-      {editing?.action === "remove" && <RemoveForm key={editing.asset.id} remove={() => library.getState().remove(editing.asset.id)} onClose={onClose} />}
+      {editing?.action === "remove" && (
+        <RemoveForm
+          key={editing.asset.id}
+          remove={() => library.getState().remove(editing.asset.id)}
+          onRemoved={() => onRemoved(editing.asset)}
+          onClose={onClose}
+        />
+      )}
     </Dialog>
   );
+}
+
+// Whether the form is still shown. An answer that comes after Cancel finds it gone, and must not close the dialog
+// opened since.
+function useStillShown() {
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
+  return shown;
 }
 
 type ValueFormProps = { label: string; initial: string; maxLength: number; save(value: string): Promise<MediaResult<unknown>>; onClose(): void };
@@ -277,12 +330,14 @@ function ValueForm({ label, initial, maxLength, save, onClose }: ValueFormProps)
   const [value, setValue] = useState(initial);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const shown = useStillShown();
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (saving) return;
     setSaving(true);
     const answer = await save(value);
+    if (!shown.current) return;
     setSaving(false);
     if (answer.ok) onClose();
     else setRefusal(refusalOf(answer));
@@ -291,7 +346,7 @@ function ValueForm({ label, initial, maxLength, save, onClose }: ValueFormProps)
   return (
     <form className="flex flex-col gap-3" onSubmit={onSubmit}>
       <Field label={label}>
-        <TextInput autoFocus value={value} maxLength={maxLength} onChange={(event) => setValue(event.target.value)} />
+        <TextInput data-autofocus value={value} maxLength={maxLength} onChange={(event) => setValue(event.target.value)} />
       </Field>
       {refusal && (
         <p role="alert" className="text-ed-danger">
@@ -309,17 +364,21 @@ function ValueForm({ label, initial, maxLength, save, onClose }: ValueFormProps)
 }
 
 // Remove asks first. A refusal (the asset is in use) takes the place of the question, and only Close is left.
-function RemoveForm({ remove, onClose }: { remove(): Promise<MediaResult<object>>; onClose(): void }) {
+function RemoveForm({ remove, onRemoved, onClose }: { remove(): Promise<MediaResult<object>>; onRemoved(): void; onClose(): void }) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
+  const shown = useStillShown();
 
   async function onRemove() {
     if (removing) return;
     setRemoving(true);
     const answer = await remove();
+    if (!shown.current) return;
     setRemoving(false);
-    if (answer.ok) onClose();
-    else setRefusal(refusalOf(answer));
+    if (answer.ok) {
+      onRemoved();
+      onClose();
+    } else setRefusal(refusalOf(answer));
   }
 
   if (refusal !== null) {

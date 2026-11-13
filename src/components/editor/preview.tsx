@@ -10,7 +10,7 @@ import { SAFE_ZONES } from "@/lib/render/safe-zones";
 import type { TimelineDoc } from "@/lib/timeline";
 import { useEditor, useEditorStore } from "./context";
 import { useMedia, type MediaServices } from "./media/media-context";
-import { createMediaPool, type PoolDeps } from "./media/media-pool";
+import { createMediaPool, upcomingWants, type PoolDeps } from "./media/media-pool";
 import { Transport } from "./transport";
 import { usePlayback } from "./use-playback";
 
@@ -20,7 +20,8 @@ const PADDING_PX = 16; // around the canvas, inside the region
 // is drawn from a store subscription, not from React state, so playing re-renders nothing here.
 // A frame the playback loop moves to is drawn in that same animation frame, in step with the
 // timecode and the timeline's playhead; every other change waits for the next one. Each draw first makes the
-// media pool's video and audio elements match the frame, then draws from them.
+// media pool's video and audio elements match the frame, readying those of the clips that start soon, then draws
+// from them.
 export function Preview() {
   const drawNow = useRef<(() => void) | null>(null);
   const redraw = useRef<(() => void) | null>(null);
@@ -85,7 +86,7 @@ export function Preview() {
       const s = store.getState();
       const doc = viewDoc(s);
       pool.preload(upcomingAssetIds(doc, s.playhead));
-      pool.sync(mediaWants(doc, s.playhead, { playing: s.playing, rate: s.rate }));
+      pool.sync(mediaWants(doc, s.playhead, { playing: s.playing, rate: s.rate }), upcomingWants(doc, s.playhead));
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       const { scale } = previewSize(doc);
@@ -117,7 +118,9 @@ export function Preview() {
       if (docChanged) loadFonts(doc);
       // A pause stops the media at once, not in the next animation frame: usePlayback pauses when the tab is
       // hidden, and a hidden tab runs none, so the media would go on sounding past the clip until it is shown.
-      if (prev.playing && !s.playing) pool.sync(mediaWants(doc, s.playhead, { playing: false, rate: s.rate }));
+      if (prev.playing && !s.playing) {
+        pool.sync(mediaWants(doc, s.playhead, { playing: false, rate: s.rate }), upcomingWants(doc, s.playhead));
+      }
       if (docChanged || s.playhead !== prev.playhead) schedule();
     });
     const unsubscribeLibrary = media.library.subscribe((s, prev) => {

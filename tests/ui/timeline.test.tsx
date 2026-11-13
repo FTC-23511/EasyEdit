@@ -5,6 +5,7 @@ import { LANE_GUTTER } from "@/components/editor/timeline/playhead";
 import { MediaProvider, type MediaServices } from "@/components/editor/media/media-context";
 import { Timeline } from "@/components/editor/timeline/timeline";
 import { HEADER_WIDTH, MAX_CONTENT_PX, formatTimecode } from "@/lib/editor/geometry";
+import { createEmptyDoc } from "@/lib/timeline";
 import { act, fireEvent, render, screen, within } from "../helpers/dom";
 import { assetView, pretendMediaServices } from "../helpers/media-services";
 import { makeStore, sampleDoc, video } from "../editor/fixtures";
@@ -210,4 +211,12 @@ it("a media clip carries its asset's name", () => {
   act(() => bare.store.getState().setZoom(2));
   expect(bare.clip("c1").getAttribute("aria-label")).toBe(`Video clip, ${range}`);
   expect(within(bare.clip("c1")).getByText("Video")).toBeTruthy();
+});
+
+it("an empty timeline says where clips come from, and only an editor is told to add them", () => {
+  const { unmount } = setup(makeStore({ doc: createEmptyDoc("short_9x16") }));
+  expect(screen.getByText("Nothing on the timeline yet. Add text or media from the panel on the left.")).toBeTruthy();
+  unmount();
+  setup(makeStore({ doc: createEmptyDoc("short_9x16"), canEdit: false }));
+  expect(screen.getByText("Nothing on the timeline yet.")).toBeTruthy();
 });

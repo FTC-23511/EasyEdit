@@ -265,6 +265,30 @@ it("leaving the editor stops uploads and removes nothing", async () => {
   expect(unload.defaultPrevented).toBe(false);
 });
 
+it("a file dropped outside the Media tab does nothing; on the tab it is uploaded", async () => {
+  stubServer();
+  const media = pretendMedia();
+  render(<EditorShell initial={initial()} />);
+  await flush();
+  const timeline = screen.getByRole("region", { name: "Timeline" });
+  const files = [new File(["x"], "a.mov", { lastModified: 1 })];
+  const carryingFiles = { dataTransfer: { types: ["Files"], files } };
+  // false: the default is prevented, so the browser does not open the file in place of the editor
+  expect(fireEvent.dragOver(timeline, carryingFiles)).toBe(false);
+  expect(fireEvent.drop(timeline, carryingFiles)).toBe(false);
+  expect(media.queue.add).not.toHaveBeenCalled();
+  // A drag of text or of something on the page is left to the browser.
+  const carryingText = { dataTransfer: { types: ["text/plain"], files: [] } };
+  expect(fireEvent.dragOver(timeline, carryingText)).toBe(true);
+  expect(fireEvent.drop(timeline, carryingText)).toBe(true);
+
+  await act(() => void fireEvent.click(screen.getByRole("tab", { name: "Media" })));
+  await flush();
+  expect(fireEvent.drop(screen.getByRole("tabpanel", { name: "Media" }), carryingFiles)).toBe(false);
+  expect(media.queue.add).toHaveBeenCalledTimes(1);
+  expect(media.queue.add).toHaveBeenCalledWith(files);
+});
+
 it("a refresh or ensure that fails leaves no rejection unhandled", async () => {
   stubServer();
   handled.length = 0;
