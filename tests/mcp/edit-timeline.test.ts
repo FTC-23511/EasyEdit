@@ -98,14 +98,8 @@ describe("edit_timeline", () => {
     expect(r.text).toContain(OP_HINTS.TRACK_LOCKED);
   });
 
-  it("refuses media clips and whole-track replacement for now", async () => {
+  it("refuses whole-track replacement", async () => {
     const { edit, project } = await setup();
-    const video = { op: "add_clip", trackId: "v1", clip: { type: "video", assetId: "made-up", start: 0, duration: 30, in: 0, speed: 1, volume: 1, transform: textClip(0).transform } };
-    expect(await edit(0, [addText(0), video])).toEqual({ isError: true, text: [
-      "Edit refused: ops[1] (add_clip) is not available here.",
-      "Video, image and audio clips can't be added until the media library exists. Only text clips can be added.",
-      "Nothing was applied.",
-    ].join("\n") });
     expect(await edit(0, [{ op: "replace_track", track: (await project()).doc.tracks[1], index: 1 }])).toEqual({ isError: true, text: [
       "Edit refused: ops[0] (replace_track) is not available here.",
       "Change tracks with add_clip, move_clip and the other ops.",

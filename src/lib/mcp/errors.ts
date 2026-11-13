@@ -1,6 +1,8 @@
 import type { Role } from "@/lib/allowlist/service";
 import { summarizeOps } from "@/lib/editor/activity";
 import { LIMITS } from "@/lib/limits";
+import type { AssetTrouble } from "@/lib/media/refs";
+import type { AssetKind } from "@/lib/media/types";
 import { actorUserId, displayActor } from "@/lib/projects/display-actor";
 import { getOpsSince, getProject } from "@/lib/projects/service";
 import { getUserNames } from "@/lib/projects/user-names";
@@ -131,6 +133,40 @@ export function tooManyTextItems(limit: number): string {
 }
 
 export const NO_ROOM_FOR_TEXT = `There is no room for that text: the project has ${LIMITS.tracksPerProject} tracks and none is free at that time. Remove a track or pick another time.`;
+
+// Why an asset an op or an add_media item names cannot be used. assetKind is needed for wrong_kind.
+const KIND_IS: Record<AssetKind, string> = { video: "a video", image: "an image", audio: "audio" };
+
+export function assetReason(trouble: AssetTrouble, assetId: string, assetKind?: AssetKind): string {
+  // The id is echoed as Claude sent it, on one line, like the ids in the engine's messages.
+  const id = oneLine(assetId);
+  switch (trouble) {
+    case "missing":
+      return `No asset with id "${id}". Call list_assets to see the ids.`;
+    case "removed":
+      return `Asset "${id}" was removed from the library. Call list_assets to see what is there.`;
+    case "not_ready":
+      return `Asset "${id}" is still uploading. Try again once list_assets shows it.`;
+    case "wrong_kind":
+      return `Asset "${id}" is ${KIND_IS[assetKind!]}. Set the clip's "type" to "${assetKind}" and put it on a track that takes it.`;
+  }
+}
+
+// An op that names media that cannot be used. The ops are refused before the project is read.
+export function assetNotUsable(hit: { opIndex: number; opName: string; reason: string }): ToolResult {
+  return fail([`Edit refused: ops[${hit.opIndex}] (${hit.opName}) names media that can't be used.`, hit.reason, NOTHING_APPLIED].join("\n"));
+}
+
+// add_media's own refusals.
+export const NO_ROOM_FOR_MEDIA = `There is no room for that media: the project has ${LIMITS.tracksPerProject} tracks and none is free at that time. Remove a track or pick another time.`;
+
+export function mediaItemOutside(index: number, seconds: number): string {
+  return `items[${index}]: in_seconds is past the end of the media, which is ${seconds.toFixed(2)} s long.`;
+}
+
+export function tooManyMediaItems(limit: number): string {
+  return `At most ${limit} clips per call.`;
+}
 
 // undo_change's own refusals.
 export function noSuchChange(version: number): string {

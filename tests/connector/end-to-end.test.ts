@@ -6,6 +6,7 @@ import { removeEntry } from "@/lib/allowlist/service";
 import { makeOpsHandlers } from "@/lib/projects/handlers";
 import { applyProjectOps, getProject } from "@/lib/projects/service";
 import { BASE_URL, MCP_URL, startConnectorApp, type ConnectorApp } from "../helpers/connector";
+import { insertAsset } from "../media/context";
 import { addText } from "../mcp/context";
 
 let testDb: DB;
@@ -18,7 +19,7 @@ beforeAll(async () => {
 });
 afterAll(() => app.stop());
 
-const TOOLS = ["add_text", "create_project", "edit_timeline", "get_editing_guide", "get_project", "list_projects", "undo_change"];
+const TOOLS = ["add_media", "add_text", "create_project", "edit_timeline", "get_editing_guide", "get_project", "list_assets", "list_projects", "undo_change"];
 
 // A conversation: one connected client, and a helper that calls a tool and returns its text.
 async function converse(email: string) {
@@ -45,13 +46,16 @@ const clipIn = (text: string) => /clip (\S+) on track/.exec(text)![1];
 const logRows = async (id: string) => rowsOf<{ version: number; actor: string }>(await app.db.execute(sql`select version, actor from project_ops where project_id = ${id} order by version`));
 
 describe("Claude and the website on one project", () => {
-  it("offers exactly the seven tools, in a list small enough to load into every conversation", async () => {
+  it("offers exactly the nine tools, in a list small enough to load into every conversation", async () => {
     const { client } = await converse("ada@gmail.com");
     try {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(TOOLS);
       expect(JSON.stringify(tools).length).toBeLessThan(12_000);
-      for (const t of tools) expect(t.annotations?.readOnlyHint, t.name).toBe(["get_editing_guide", "get_project", "list_projects"].includes(t.name));
+      for (const t of tools) expect(t.annotations?.readOnlyHint, t.name).toBe(["get_editing_guide", "get_project", "list_assets", "list_projects"].includes(t.name));
+      const keysOf = (name: string) => Object.keys(tools.find((t) => t.name === name)?.inputSchema.properties ?? {}).sort();
+      expect(keysOf("list_assets")).toEqual(["cursor", "kind", "search"]);
+      expect(keysOf("add_media")).toEqual(["expected_version", "items", "project_id"]);
       const getProject = tools.find((t) => t.name === "get_project");
       expect(Object.keys(getProject?.inputSchema.properties ?? {}).sort()).toEqual(["cursor", "project_id", "version"]);
       expect(getProject?.description).toMatch(
@@ -127,6 +131,22 @@ describe("Claude and the website on one project", () => {
       expect(await logRows(id)).toHaveLength(1);
       const again = await call("create_project", { name: "Twice", format: "short_9x16" });
       expect(idIn(again.text)).toBe(id);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("Claude finds a clip in the library and puts it on the timeline", async () => {
+    const { c, client, call } = await converse("ida@gmail.com");
+    try {
+      const assetId = await insertAsset(app.db, { name: "intake", durationMs: 12_500, uploadedBy: c.userId });
+      expect((await call("list_assets", { search: "intake" })).text).toContain(`${assetId}  video  "intake"  12.50s (375 frames at 30 fps)`);
+      const id = idIn((await call("create_project", { name: "Media", format: "short_9x16" })).text);
+      const added = await call("add_media", { project_id: id, expected_version: 0, items: [{ asset_id: assetId, duration_seconds: 3 }] });
+      expect(added.text.split("\n")[0]).toBe("Added 1 clip as version 1.");
+      const trimmed = await call("edit_timeline", { project_id: id, expected_version: 1, ops: [{ op: "trim_clip", clipId: clipIn(added.text), edge: "start", to: 30 }] });
+      expect(trimmed.isError).toBe(false);
+      expect((await call("get_project", { project_id: id })).text).toContain(`asset="${assetId}" in=1.00s`);
     } finally {
       await client.close();
     }

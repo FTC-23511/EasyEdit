@@ -1,7 +1,7 @@
 import type { OpInput } from "@/lib/timeline";
 import { editedText, runEdit } from "../edit";
-import { opNotAvailable } from "../errors";
-import { checkAllowedOps } from "../op-rules";
+import { assetNotUsable, opNotAvailable } from "../errors";
+import { checkAllowedOps, checkAssetOps } from "../op-rules";
 import { ok, type ToolContext, type ToolResult } from "../types";
 
 export async function editTimelineTool(
@@ -10,6 +10,9 @@ export async function editTimelineTool(
 ): Promise<ToolResult> {
   const notAllowed = checkAllowedOps(input.ops);
   if (notAllowed) return opNotAvailable(notAllowed);
+  // Before the project is read: an asset id that is wrong says how to find the right one.
+  const badAsset = await checkAssetOps(ctx.db, input.ops);
+  if (badAsset) return assetNotUsable(badAsset);
 
   // The engine checks each op's shape; the service refuses the whole batch if one is wrong.
   const done = await runEdit(ctx, {

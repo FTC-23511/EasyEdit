@@ -13,6 +13,18 @@ export const EXAMPLE_TEXT_CLIP: { type: "text"; start: number; duration: number;
   style: { fontFamily: "Geist", fontSize: 96, fontWeight: 700, color: "#ffffff", align: "center" },
 };
 
+// The media clip shown in the op reference, with a stand-in asset id. The test adds it, with a real asset's id, to a project.
+export const EXAMPLE_MEDIA_CLIP: { type: "video"; assetId: string; start: number; duration: number; in: number; speed: number; volume: number; transform: Transform } = {
+  type: "video",
+  assetId: "A",
+  start: 0,
+  duration: 90,
+  in: 0,
+  speed: 1,
+  volume: 1,
+  transform: { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, fit: "cover" },
+};
+
 // The ops edit_timeline accepts, as Claude reads them. replace_track stays out: it is kept for stored undo data.
 export const OP_REFERENCE = `Ops:
 {"op":"add_clip","trackId":T,"clip":CLIP,"ripple":true}      ripple is optional: it pushes later clips right
@@ -20,7 +32,7 @@ export const OP_REFERENCE = `Ops:
 {"op":"move_clip","clipId":C,"start":F,"trackId":T}         trackId is optional: another track
 {"op":"trim_clip","clipId":C,"edge":"start"|"end","to":F}   to is the new timeline frame of that edge
 {"op":"split_clip","clipId":C,"at":F}                       the second half gets a new id
-{"op":"update_clip","clipId":C,"patch":{...}}               text, style{...}, transform{...}; never start or duration
+{"op":"update_clip","clipId":C,"patch":{...}}               text, style{...}, transform{...}, volume, speed; never start or duration
 {"op":"add_track","track":{"kind":"video"|"overlay"|"text"|"audio","name":S},"index":N}   index is optional
 {"op":"update_track","trackId":T,"patch":{"name":S,"muted":B,"hidden":B,"locked":B}}       any of the four
 {"op":"move_track","trackId":T,"index":N}                   a later track draws on top
@@ -28,7 +40,9 @@ export const OP_REFERENCE = `Ops:
 {"op":"set_format","format":"short_9x16"|"feed_4x5"|"square_1x1"|"long_16x9"|"long_4k"}
 
 A text CLIP: {"type":"text","start":F,"duration":F,"text":S,"transform":${JSON.stringify(EXAMPLE_TEXT_CLIP.transform)},"style":${JSON.stringify(EXAMPLE_TEXT_CLIP.style)}}
-x and y place the clip's center as a fraction of the frame: 0.5, 0.5 is the middle. Only text clips can be added today. For plain text, add_text is simpler.`;
+A media CLIP: {"type":"video"|"image"|"audio","assetId":A,"start":F,"duration":F,"in":F,"speed":1,"volume":1,"transform":{"x":0.5,"y":0.5,"scale":1,"rotation":0,"opacity":1,"fit":"cover"}}
+assetId comes from list_assets, and type must be the asset's kind. in is the first frame of the footage the clip shows. Video and audio must stay inside the footage: in + duration × speed is at most the asset's length in frames. Video and image clips go on video or overlay tracks, audio clips on audio tracks.
+x and y place the clip's center as a fraction of the frame: 0.5, 0.5 is the middle. For plain text, add_text is simpler; for media, add_media is.`;
 
 export const EDIT_DESCRIPTION = `Change a project's timeline with a batch of ops. The whole batch is applied, or none of it.
 
@@ -58,8 +72,8 @@ export function buildEditingGuide(): string {
     "- Every change is a batch of ops (see edit_timeline). Each batch is one line in the editor's Activity list, under your name, and people can undo it there.",
     "",
     "## What is possible today",
-    "- Create projects. Add and style text. Move, trim, split and delete clips. Add, rename, lock, hide, reorder and remove tracks. Change the format.",
-    "- Not yet: adding video, images, audio or captions; export; posting. Say so when asked. Never make up an asset id.",
+    "- Create projects. Add and style text. Add video, images and audio from the library. Move, trim, split and delete clips. Add, rename, lock, hide, reorder and remove tracks. Change the format.",
+    "- Not yet: seeing inside footage, captions, export, posting. Say so when asked. Never make up an asset id.",
     "",
     "## Working well",
     "- Read first: call get_project before the first change to a project.",
@@ -80,6 +94,12 @@ export function buildEditingGuide(): string {
     `- Presets for add_text: ${presets}.`,
     `- A text clip lasts ${DEFAULT_TEXT_SECONDS} seconds unless you say otherwise. The only font today is ${TEXT_FONT}. Colors are hex, like #ffffff.`,
     `- A clip's text can be up to ${LIMITS.textClipChars} characters. Long text wraps at 90% of the frame width.`,
+    "",
+    "## Media",
+    "- Find media with list_assets. You cannot see or hear it yet: go by names, events and lengths, and ask the person which moments they want.",
+    "- add_media lays clips end to end in the order you give them. To use part of a video, give in_seconds and duration_seconds.",
+    '- A video\'s own sound plays with it. Set a clip\'s volume with update_clip {"volume": 0} to silence it, or mute a whole track.',
+    "- A clip cannot run past the end of its footage. A trim that would is refused.",
   ];
   if (TEAM_STYLE_RULES.length > 0) lines.push("", "## Team style", ...TEAM_STYLE_RULES.map((rule) => `- ${rule}`));
   return lines.join("\n");

@@ -4,10 +4,12 @@ import { LIMITS } from "@/lib/limits";
 import { FormatId } from "@/lib/timeline";
 import { UNEXPECTED } from "./errors";
 import { EDIT_DESCRIPTION, buildEditingGuide } from "./guide";
+import { addMediaTool } from "./tools/add-media";
 import { addTextTool } from "./tools/add-text";
 import { createProjectTool } from "./tools/create-project";
 import { editTimelineTool } from "./tools/edit-timeline";
 import { getProjectTool } from "./tools/get-project";
+import { listAssetsTool } from "./tools/list-assets";
 import { listProjectsTool } from "./tools/list-projects";
 import { undoChangeTool } from "./tools/undo-change";
 import { ok, type ToolContext, type ToolResult } from "./types";
@@ -145,6 +147,49 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
     answer("add_text", (input) => addTextTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "list_assets",
+    {
+      title: "List media",
+      description:
+        'List the team\'s uploaded video, images and audio, newest first, with each asset\'s id, kind, length and size. Filter by kind, or by a word in the name or event. Use an id from here in add_media, or as "assetId" in a media clip for edit_timeline. You cannot see inside footage yet: go by names, events and lengths.',
+      inputSchema: z.object({
+        kind: z.enum(["video", "image", "audio"]).optional(),
+        search: z.string().max(100).optional(),
+        cursor: z.number().int().min(0).optional(),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    answer("list_assets", (input) => listAssetsTool(ctx, input)),
+  );
+
+  server.registerTool(
+    "add_media",
+    {
+      title: "Add media",
+      description:
+        "Put one or more assets from list_assets on the timeline. Times are in seconds. Each item takes asset_id and, optionally, start_seconds, in_seconds (where in the footage to begin), duration_seconds and track_id. Without start_seconds, an item goes right after the one before it; the first goes after what is already on its track. Video and audio default to their full length, images to 3 seconds. It finds a free track of the right kind or makes one. Needs expected_version, like edit_timeline.",
+      inputSchema: z.object({
+        project_id: z.string().min(1),
+        expected_version: z.number().int().min(0),
+        items: z
+          .array(
+            z.object({
+              asset_id: z.string().min(1),
+              start_seconds: z.number().min(0).optional(),
+              in_seconds: z.number().min(0).optional(),
+              duration_seconds: z.number().positive().optional(),
+              track_id: z.string().min(1).optional(),
+            }),
+          )
+          .min(1)
+          .max(LIMITS.connectorMediaItems),
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    answer("add_media", (input) => addMediaTool(ctx, input)),
   );
 
   server.registerTool(
