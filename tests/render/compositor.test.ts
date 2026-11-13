@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLACEHOLDER_FILL, activeClips, drawFrame, fitRect } from "@/lib/render/compositor";
 import { SAFE_ZONES } from "@/lib/render/safe-zones";
 import { layoutText, wrapLines } from "@/lib/render/text-layout";
-import { DEFAULT_TRANSFORM, createEmptyDoc, type Clip, type TextClip, type TimelineDoc } from "@/lib/timeline";
+import { DEFAULT_TRANSFORM, createEmptyDoc, type Clip, type MediaClip, type TextClip, type TimelineDoc } from "@/lib/timeline";
 import { text, video } from "../editor/fixtures";
 import { fakeCtx, type Call } from "./fake-ctx";
 
@@ -86,11 +86,44 @@ describe("drawFrame", () => {
     const d = createEmptyDoc("short_9x16");
     d.tracks[0].clips = [video("v", 0, 30, { type: "image" })];
     const { ctx, calls } = fakeCtx();
-    drawFrame(ctx, d, 0, { resolveSource: (assetId) => (assetId === "a" ? { image, width: 1920, height: 1080 } : null) });
+    drawFrame(ctx, d, 0, { resolveSource: (clip) => (clip.assetId === "a" ? { image, width: 1920, height: 1080 } : null) });
     const [draw] = only(calls, "drawImage");
     expect(draw[1]).toBe(image);
     expect((draw.slice(2) as number[]).map(Math.round)).toEqual([-1707, -960, 3413, 1920]);
     expect(only(calls, "fillText")).toEqual([]);
+  });
+});
+
+describe("the media seam", () => {
+  const texts = (calls: Call[]) => only(calls, "fillText").map((c) => c[1]);
+
+  it("asks for a source with the clip and the frame, so two clips of one asset can differ", () => {
+    const doc = createEmptyDoc("short_9x16");
+    doc.tracks[0].clips = [video("c1", 0, 30), video("c2", 30, 30, { in: 300 })];
+    const asked: [string, string, number, number][] = [];
+    const resolveSource = (clip: MediaClip, frame: number) => { asked.push([clip.id, clip.assetId, clip.in, frame]); return null; };
+    drawFrame(fakeCtx().ctx, doc, 10, { resolveSource });
+    drawFrame(fakeCtx().ctx, doc, 40, { resolveSource });
+    expect(asked).toEqual([["c1", "a", 0, 10], ["c2", "a", 300, 40]]);
+  });
+
+  it("a clip with no picture says what its label says", () => {
+    const { ctx, calls } = fakeCtx();
+    const doc = createEmptyDoc("short_9x16");
+    doc.tracks[0].clips = [video("c1", 0, 30)];
+    drawFrame(ctx, doc, 0, { resolveSource: () => null, placeholderLabel: () => "Preparing preview" });
+    expect(texts(calls)).toEqual(["Preparing preview"]);
+  });
+
+  it("says Video or Image when no label is given", () => {
+    const doc = createEmptyDoc("short_9x16");
+    doc.tracks[0].clips = [video("c1", 0, 30), video("c2", 30, 30, { type: "image" })];
+    const first = fakeCtx();
+    drawFrame(first.ctx, doc, 0);
+    expect(texts(first.calls)).toEqual(["Video"]);
+    const second = fakeCtx();
+    drawFrame(second.ctx, doc, 30);
+    expect(texts(second.calls)).toEqual(["Image"]);
   });
 });
 

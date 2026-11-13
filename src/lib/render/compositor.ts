@@ -4,7 +4,10 @@ import { layoutText } from "./text-layout";
 export type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 export type ResolvedSource = { image: CanvasImageSource; width: number; height: number };
 export type DrawOptions = {
-  resolveSource?: (assetId: string) => ResolvedSource | null; // the seam where media plugs in; nothing provides it yet
+  // The seam where media plugs in. clip: the video or image clip being drawn. frame: the timeline frame being drawn.
+  resolveSource?: (clip: MediaClip, frame: number) => ResolvedSource | null;
+  // What a clip with no picture says in its placeholder. Default: "Video" or "Image".
+  placeholderLabel?: (clip: MediaClip) => string;
   resolveFont?: (family: string) => string; // a document font name to a CSS font-family list
 };
 
@@ -41,8 +44,8 @@ function drawText(ctx: Ctx2D, doc: TimelineDoc, clip: TextClip, resolveFont: (fa
   for (const line of layoutText(clip, doc.width, (s) => ctx.measureText(s).width)) ctx.fillText(line.text, line.x, line.y);
 }
 
-function drawMedia(ctx: Ctx2D, doc: TimelineDoc, clip: MediaClip & { type: "video" | "image" }, resolveSource?: DrawOptions["resolveSource"]): void {
-  const source = resolveSource?.(clip.assetId);
+function drawMedia(ctx: Ctx2D, doc: TimelineDoc, clip: MediaClip & { type: "video" | "image" }, frame: number, options: DrawOptions): void {
+  const source = options.resolveSource?.(clip, frame);
   if (source && source.width > 0 && source.height > 0) {
     const { width, height } = fitRect(source.width, source.height, doc.width, doc.height, clip.transform.fit);
     ctx.drawImage(source.image, -width / 2, -height / 2, width, height);
@@ -54,7 +57,7 @@ function drawMedia(ctx: Ctx2D, doc: TimelineDoc, clip: MediaClip & { type: "vide
   ctx.font = `500 ${Math.round(doc.width * 0.04)}px sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(clip.type === "video" ? "Video" : "Image", 0, 0);
+  ctx.fillText(options.placeholderLabel?.(clip) ?? (clip.type === "video" ? "Video" : "Image"), 0, 0);
 }
 
 // Draws in project pixels and never reads the canvas size: a caller that wants a smaller canvas scales the context first.
@@ -70,7 +73,7 @@ export function drawFrame(ctx: Ctx2D, doc: TimelineDoc, frame: number, options: 
     ctx.rotate((t.rotation * Math.PI) / 180);
     ctx.scale(t.scale, t.scale);
     if (clip.type === "text") drawText(ctx, doc, clip, resolveFont);
-    else if (clip.type === "video" || clip.type === "image") drawMedia(ctx, doc, clip as MediaClip & { type: "video" | "image" }, options.resolveSource);
+    else if (clip.type === "video" || clip.type === "image") drawMedia(ctx, doc, clip as MediaClip & { type: "video" | "image" }, frame, options);
     ctx.restore();
   }
 }
