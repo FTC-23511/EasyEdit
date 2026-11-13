@@ -224,8 +224,9 @@ export function MediaTab({ panel, onAdd }: MediaTabProps) {
 
         <div className="flex flex-col gap-2">
           <TextInput ref={search} type="search" aria-label="Search media" placeholder="Search" value={query} onChange={(event) => library.getState().setQuery(event.target.value)} />
-          {/* Tighter padding than the shared control's, so "Images" fits in a quarter of the panel's default width. */}
-          <Segmented label="Kind" className="[&>button]:px-1" value={kind} options={KINDS} onChange={(value) => library.getState().setKind(value)} />
+          {/* Each choice as wide as its word and the rest shared out, with tighter padding than the shared control's,
+              so "Images" is not cut short at the panel's default width (equal quarters leave it a pixel short). */}
+          <Segmented label="Kind" className="[&>button]:flex-auto [&>button]:px-1" value={kind} options={KINDS} onChange={(value) => library.getState().setKind(value)} />
         </div>
 
         {problem === "signed-out" ? (
